@@ -83,7 +83,10 @@ function configureLocalStrategy(getUserByUsername, verifyUserPassword) {
             try {
                 const user = await getUserByUsername(username);
 
-                if (!user) {
+                if (!user || !user.passwordHash) {
+                    // No local password on file (e.g. an OIDC-only, JIT-provisioned
+                    // account) - fail the same way as an unknown user instead of
+                    // handing bcrypt a null hash, which throws.
                     return done(null, false, { message: 'Invalid credentials' });
                 }
 
