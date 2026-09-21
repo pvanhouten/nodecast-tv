@@ -6,30 +6,36 @@
  * sessions): the direct proxy passthrough (/api/proxy/stream) and the
  * lightweight remux/direct-transcode paths. Live TV playback via hls.js
  * hits these repeatedly - once for the manifest, then again for every
- * segment, each with its own unique URL - so there's no single request
- * that represents "the user is watching this channel." Instead, we key by
- * user (one entry per user, not per URL) and treat same-directory URLs as
- * continued playback of the same stream rather than a new one, so segment
- * churn doesn't reset the "started watching" time or spawn duplicate rows.
+ * segment, each with its own unique URL, and manifest/segment URLs often
+ * live under entirely different paths for the same channel (many Xtream
+ * backends redirect the manifest to one path and serve segments from
+ * another). So we key by user (one entry per user, not per URL) and only
+ * use manifest (.m3u8) URLs to establish "which stream" identity - segment
+ * touches just keep the entry alive without changing the display or
+ * resetting the timer, and a genuinely new manifest identity (a real
+ * channel switch) is what resets things.
  */
 
-const activity = new Map(); // userId -> { username, url, baseKey, type, startTime, lastAccess }
+const activity = new Map(); // userId -> { username, url, identity, type, startTime, lastAccess }
 
 const ACTIVE_WINDOW_MS = 20 * 1000; // no touch in this long = no longer "watching"
 const PRUNE_AFTER_MS = 5 * 60 * 1000; // drop stale entries entirely after this long
 
+function isManifestUrl(url) {
+    return url.split('?')[0].toLowerCase().endsWith('.m3u8');
+}
+
 /**
- * A stable identifier for "which stream" a URL belongs to, ignoring the
- * per-segment filename (e.g. segment_42.ts) so consecutive segment
- * fetches for the same channel collapse into one entry.
+ * A stable identity for "which stream" a manifest URL points to - origin +
+ * path, ignoring the query string since many providers attach rotating
+ * tokens/signatures there even for the same channel.
  */
-function baseKeyFor(url) {
+function identityFor(url) {
     try {
         const u = new URL(url);
-        const dir = u.pathname.replace(/\/[^/]*$/, '/');
-        return `${u.origin}${dir}`;
+        return `${u.origin}${u.pathname}`;
     } catch (e) {
-        return url;
+        return url.split('?')[0];
     }
 }
 
@@ -38,24 +44,37 @@ function baseKeyFor(url) {
  */
 function touch({ userId, username, url, type }) {
     const now = Date.now();
-    const base = baseKeyFor(url);
     const existing = activity.get(userId);
+    const manifest = isManifestUrl(url);
 
-    if (existing && existing.baseKey === base) {
-        // Same stream, just another segment/manifest poll - keep the
-        // original display URL and startTime, bump the heartbeat.
-        existing.lastAccess = now;
-    } else {
-        // New stream for this user (first touch, or they switched channels).
+    if (!existing) {
         activity.set(userId, {
             username,
             url,
-            baseKey: base,
+            identity: manifest ? identityFor(url) : url,
             type,
             startTime: now,
             lastAccess: now
         });
+        return;
     }
+
+    existing.lastAccess = now;
+
+    if (manifest) {
+        const newIdentity = identityFor(url);
+        if (newIdentity !== existing.identity) {
+            // A different manifest means a real channel/stream switch -
+            // update what's displayed and restart the "started" clock.
+            existing.identity = newIdentity;
+            existing.url = url;
+            existing.startTime = now;
+        }
+    }
+    // Non-manifest (segment) touches only keep the entry alive; they never
+    // change the displayed URL or reset the timer, since segment paths for
+    // the same channel churn constantly and often don't share a directory
+    // with the manifest at all.
 }
 
 /**
