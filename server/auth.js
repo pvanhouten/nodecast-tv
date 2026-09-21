@@ -10,9 +10,28 @@ const { Strategy: LocalStrategy } = require('passport-local');
  * Using Passport.js with JWT tokens
  */
 
-// JWT Secret - In production, use environment variable
-const JWT_SECRET = process.env.JWT_SECRET || 'nodecast-tv-secret-key-change-in-production';
+// JWT Secret - must be set explicitly; index.js refuses to start otherwise
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRY = '24h';
+
+/**
+ * Extract a JWT from the httpOnly "token" cookie.
+ * Needed because <video>/<track> src and hls.js's internal loader can't
+ * attach a custom Authorization header, but they do send same-origin cookies.
+ */
+function cookieExtractor(req) {
+    if (req && req.headers && req.headers.cookie) {
+        const match = req.headers.cookie.match(/(?:^|;\s*)token=([^;]+)/);
+        if (match) {
+            try {
+                return decodeURIComponent(match[1]);
+            } catch (e) {
+                return match[1];
+            }
+        }
+    }
+    return null;
+}
 
 /**
  * Hash password using bcrypt
@@ -87,7 +106,10 @@ function configureLocalStrategy(getUserByUsername, verifyUserPassword) {
  */
 function configureJwtStrategy(getUserById) {
     const options = {
-        jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+        jwtFromRequest: ExtractJwt.fromExtractors([
+            ExtractJwt.fromAuthHeaderAsBearerToken(),
+            cookieExtractor
+        ]),
         secretOrKey: JWT_SECRET
     };
 

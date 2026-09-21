@@ -5,6 +5,13 @@ const path = require('path');
 const fs = require('fs').promises;
 const db = require('../db');
 const transcodeSession = require('../services/transcodeSession');
+const { requireAuth } = require('../auth');
+
+// All transcode routes require authentication. The JWT strategy accepts the
+// token from the httpOnly cookie as well as the Authorization header, so
+// <video>/hls.js segment/manifest requests (same-origin) authenticate
+// automatically without any frontend changes.
+router.use(requireAuth);
 
 /**
  * Transcode Routes

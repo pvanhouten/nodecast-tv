@@ -5,6 +5,13 @@ const { getDb } = require('../db/sqlite');
 const xtreamApi = require('../services/xtreamApi');
 const syncService = require('../services/syncService');
 const m3uParser = require('../services/m3uParser');
+const { requireAuth, requireAdmin } = require('../auth');
+
+// All source routes require authentication. Only the sanitized list view
+// (GET /) is viewer-readable (used by browsing pages to enumerate sources);
+// every other route here exposes plaintext provider credentials or lets
+// you mutate/sync IPTV sources, so those require admin.
+router.use(requireAuth);
 
 // Get all sources
 router.get('/', async (req, res) => {
@@ -23,7 +30,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get sync status for all sources
-router.get('/status', async (req, res) => {
+router.get('/status', requireAdmin, async (req, res) => {
     try {
         const { getDb } = require('../db/sqlite');
         const db = getDb();
@@ -36,7 +43,7 @@ router.get('/status', async (req, res) => {
 });
 
 // Get sources by type
-router.get('/type/:type', async (req, res) => {
+router.get('/type/:type', requireAdmin, async (req, res) => {
     try {
         const typeSources = await sources.getByType(req.params.type);
         res.json(typeSources);
@@ -46,8 +53,8 @@ router.get('/type/:type', async (req, res) => {
     }
 });
 
-// Get single source
-router.get('/:id', async (req, res) => {
+// Get single source (includes plaintext password for the admin edit form)
+router.get('/:id', requireAdmin, async (req, res) => {
     try {
         const source = await sources.getById(req.params.id);
         if (!source) {
@@ -61,7 +68,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // Create source
-router.post('/', async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
     try {
         const { type, name, url, username, password } = req.body;
 
@@ -84,7 +91,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update source
-router.put('/:id', async (req, res) => {
+router.put('/:id', requireAdmin, async (req, res) => {
     try {
         const existing = await sources.getById(req.params.id);
         if (!existing) {
@@ -108,7 +115,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete source
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
     try {
         const sourceId = parseInt(req.params.id);
         const existing = await sources.getById(sourceId);
@@ -141,7 +148,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // Toggle source enabled/disabled
-router.post('/:id/toggle', async (req, res) => {
+router.post('/:id/toggle', requireAdmin, async (req, res) => {
     try {
         const updated = await sources.toggleEnabled(req.params.id);
         if (!updated) {
@@ -161,7 +168,7 @@ router.post('/:id/toggle', async (req, res) => {
 });
 
 // Manual Sync
-router.post('/:id/sync', async (req, res) => {
+router.post('/:id/sync', requireAdmin, async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         const source = await sources.getById(id);
@@ -178,7 +185,7 @@ router.post('/:id/sync', async (req, res) => {
 });
 
 // Test source connection
-router.post('/:id/test', async (req, res) => {
+router.post('/:id/test', requireAdmin, async (req, res) => {
     try {
         const source = await sources.getById(req.params.id);
         if (!source) {
@@ -209,7 +216,7 @@ router.post('/:id/test', async (req, res) => {
 const M3U_LARGE_THRESHOLD = 50000;
 
 // Estimate by URL (for new sources before creation)
-router.post('/estimate', async (req, res) => {
+router.post('/estimate', requireAdmin, async (req, res) => {
     try {
         const { url, type } = req.body;
 
@@ -238,7 +245,7 @@ router.post('/estimate', async (req, res) => {
 });
 
 // Estimate by source ID (for existing sources)
-router.get('/:id/estimate', async (req, res) => {
+router.get('/:id/estimate', requireAdmin, async (req, res) => {
     try {
         const source = await sources.getById(req.params.id);
         if (!source) {
@@ -266,7 +273,7 @@ router.get('/:id/estimate', async (req, res) => {
 });
 
 // Global Sync - sync all enabled sources
-router.post('/sync-all', async (req, res) => {
+router.post('/sync-all', requireAdmin, async (req, res) => {
     try {
         // Trigger global sync (async - don't wait for completion)
         syncService.syncAll().catch(console.error);

@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { settings, getDefaultSettings } = require('../db');
 const syncService = require('../services/syncService');
+const { requireAuth, requireAdmin } = require('../auth');
+
+// Any authenticated user may read settings; only admins may change them.
+router.use(requireAuth);
 
 /**
  * Get all settings
@@ -21,7 +25,7 @@ router.get('/', async (req, res) => {
  * Update settings (partial update)
  * PUT /api/settings
  */
-router.put('/', async (req, res) => {
+router.put('/', requireAdmin, async (req, res) => {
     try {
         const updates = req.body;
         const updatedSettings = await settings.update(updates);
@@ -42,7 +46,7 @@ router.put('/', async (req, res) => {
  * Reset settings to defaults
  * DELETE /api/settings
  */
-router.delete('/', async (req, res) => {
+router.delete('/', requireAdmin, async (req, res) => {
     try {
         const defaultSettings = await settings.reset();
         res.json(defaultSettings);
@@ -96,7 +100,7 @@ router.get('/hw-info', async (req, res) => {
  * Refresh hardware detection (re-probe GPUs)
  * POST /api/settings/hw-info/refresh
  */
-router.post('/hw-info/refresh', async (req, res) => {
+router.post('/hw-info/refresh', requireAdmin, async (req, res) => {
     try {
         const hwDetect = require('../services/hwDetect');
         const capabilities = await hwDetect.refresh();

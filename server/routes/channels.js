@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db/sqlite');
+const { requireAuth } = require('../auth');
+
+// All channel routes require authentication
+router.use(requireAuth);
 
 // Helper to map API item types to DB types and tables
 function mapItemType(apiType) {

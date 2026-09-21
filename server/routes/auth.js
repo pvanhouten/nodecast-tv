@@ -3,6 +3,49 @@ const router = express.Router();
 const db = require('../db');
 const auth = require('../auth');
 
+const TOKEN_COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // matches JWT_EXPIRY (24h)
+
+/**
+ * Set the auth token as an httpOnly cookie, in addition to returning it in
+ * the response body. The cookie lets same-origin resource requests that
+ * can't carry a custom Authorization header (<video>/<track> src, hls.js's
+ * internal loader) authenticate to the streaming routes automatically.
+ */
+function setTokenCookie(req, res, token) {
+    res.cookie('token', token, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+        maxAge: TOKEN_COOKIE_MAX_AGE_MS
+    });
+}
+
+// Very small in-memory rate limiter for the local-password login route.
+// Not distributed/persistent by design - this is a single-instance app.
+const loginAttempts = new Map(); // ip -> { count, firstAttemptAt }
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+
+function loginRateLimit(req, res, next) {
+    const key = req.ip;
+    const now = Date.now();
+    const entry = loginAttempts.get(key);
+
+    if (!entry || now - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
+        loginAttempts.set(key, { count: 1, firstAttemptAt: now });
+        return next();
+    }
+
+    if (entry.count >= LOGIN_MAX_ATTEMPTS) {
+        const retryAfterSec = Math.ceil((entry.firstAttemptAt + LOGIN_WINDOW_MS - now) / 1000);
+        res.set('Retry-After', String(retryAfterSec));
+        return res.status(429).json({ error: 'Too many login attempts. Please try again later.' });
+    }
+
+    entry.count += 1;
+    next();
+}
+
 // Configure Passport strategies
 auth.configureLocalStrategy(
     async (username) => await db.users.getByUsername(username),
@@ -40,9 +83,12 @@ router.get('/oidc/callback',
     (req, res) => {
         // Successful authentication
         const token = auth.generateToken(req.user);
+        setTokenCookie(req, res, token);
 
-        // Redirect to hompage with token
-        res.redirect(`/?token=${token}`);
+        // Redirect with the token in the URL *fragment*, not the query string -
+        // fragments are never sent to the server or logged by reverse proxies,
+        // unlike a `?token=` query param.
+        res.redirect(`/#token=${token}`);
     }
 );
 
@@ -93,6 +139,7 @@ router.post('/setup', async (req, res) => {
 
         // Generate token for immediate login
         const token = auth.generateToken(adminUser);
+        setTokenCookie(req, res, token);
 
         res.status(201).json({
             message: 'Admin user created successfully',
@@ -109,7 +156,7 @@ router.post('/setup', async (req, res) => {
  * Login with Passport Local Strategy
  * POST /api/auth/login
  */
-router.post('/login', (req, res, next) => {
+router.post('/login', loginRateLimit, (req, res, next) => {
     auth.passport.authenticate('local', { session: false }, (err, user, info) => {
         if (err) {
             console.error('Login error:', err);
@@ -122,6 +169,7 @@ router.post('/login', (req, res, next) => {
 
         // Generate JWT token
         const token = auth.generateToken(user);
+        setTokenCookie(req, res, token);
 
         res.json({
             token,
@@ -141,6 +189,7 @@ router.post('/login', (req, res, next) => {
 router.post('/logout', (req, res) => {
     // With JWT, logout is handled client-side by removing the token
     // This endpoint exists for consistency and future server-side token blacklisting
+    res.clearCookie('token');
     res.json({ success: true, message: 'Logged out successfully' });
 });
 

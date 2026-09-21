@@ -12,6 +12,10 @@ const https = require('https');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const { Readable } = require('stream');
+const { requireAuth } = require('../auth');
+
+// All proxy routes require authentication
+router.use(requireAuth);
 
 // Default cache max age in hours
 const DEFAULT_MAX_AGE_HOURS = 24;

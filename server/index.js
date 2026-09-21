@@ -4,6 +4,11 @@ const path = require('path');
 const passport = require('passport');
 const syncService = require('./services/syncService');
 
+if (!process.env.JWT_SECRET) {
+    console.error('FATAL: JWT_SECRET environment variable must be set. Refusing to start with an insecure default secret.');
+    process.exit(1);
+}
+
 // Initialize database
 require('./db');
 
@@ -20,10 +25,24 @@ app.use(express.json({ limit: '50mb' }));
 // Initialize Passport
 const session = require('express-session');
 app.use(session({
-    secret: process.env.JWT_SECRET || 'keyboard cat',
+    secret: process.env.JWT_SECRET,
     resave: false,
-    saveUninitialized: true
+    saveUninitialized: true,
+    cookie: {
+        httpOnly: true,
+        sameSite: 'lax'
+    }
 }));
+// Mark the session cookie secure on a per-request basis when the request
+// actually arrived over HTTPS (directly or via a trusted reverse proxy) -
+// this app is reachable over both plain LAN HTTP and external HTTPS, so a
+// blanket `secure: true` would silently drop the cookie for LAN users.
+app.use((req, res, next) => {
+    if (req.session && (req.secure || req.headers['x-forwarded-proto'] === 'https')) {
+        req.session.cookie.secure = true;
+    }
+    next();
+});
 app.use(passport.initialize());
 app.use(passport.session());
 
