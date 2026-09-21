@@ -370,12 +370,18 @@ class SettingsPage {
 
             const now = Date.now();
             streamsList.innerHTML = sessions.map(s => {
-                const statusBadge = s.status === 'running'
-                    ? '<span class="user-badge user-badge-admin">Running</span>'
+                const isActive = s.status === 'running' || !s.killable;
+                const statusLabel = s.killable ? 'Transcode session' : s.status;
+                const statusBadge = isActive
+                    ? `<span class="user-badge user-badge-admin">${statusLabel}</span>`
                     : `<span class="user-badge user-badge-viewer">${s.status}</span>`;
 
                 // Truncate long URLs for display; title attribute holds the full value
                 const shortUrl = s.url.length > 60 ? s.url.slice(0, 57) + '...' : s.url;
+
+                const action = s.killable
+                    ? `<button class="btn btn-sm btn-error" onclick="window.app.pages.settings.stopStream('${s.id}')">Stop</button>`
+                    : '<span class="hint" title="This is a lightweight passthrough with no single process to stop">&mdash;</span>';
 
                 return `
                 <tr>
@@ -384,9 +390,7 @@ class SettingsPage {
                     <td>${statusBadge}</td>
                     <td>${this.formatDuration(now - s.startTime)} ago</td>
                     <td>${this.formatDuration(s.idleMs)}</td>
-                    <td>
-                        <button class="btn btn-sm btn-error" onclick="window.app.pages.settings.stopStream('${s.id}')">Stop</button>
-                    </td>
+                    <td>${action}</td>
                 </tr>
             `}).join('');
         } catch (err) {

@@ -275,6 +275,16 @@ h4 {
   background: var(--color-accent-dim);
 }
 
+.nav-user-badge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-text-secondary);
+  margin-left: auto;
+  font-size: 0.9rem;
+}
+
 .nav-icon {
   font-size: 1.1rem;
 }

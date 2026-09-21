@@ -195,7 +195,8 @@ class App {
                 }
             }
 
-            // Add logout button to navbar
+            // Show who's logged in, and add logout button to navbar
+            this.addUserBadge();
             this.addLogoutButton();
 
         } catch (err) {
@@ -203,6 +204,27 @@ class App {
             localStorage.removeItem('authToken');
             window.location.replace('/login.html');
         }
+    }
+
+    addUserBadge() {
+        const navbar = document.querySelector('.navbar-menu');
+        if (!navbar || document.getElementById('nav-user-badge') || !this.currentUser) return;
+
+        const badge = document.createElement('span');
+        badge.className = 'nav-user-badge';
+        badge.id = 'nav-user-badge';
+        // Username is untrusted (OIDC-provisioned or admin-entered) - build the
+        // icon via innerHTML but set the username via textContent so it can
+        // never be interpreted as markup.
+        badge.innerHTML = `
+            <span class="nav-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="icon">
+                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+            </svg></span>
+            <span class="nav-user-badge-name"></span>
+        `;
+        badge.querySelector('.nav-user-badge-name').textContent = this.currentUser.username;
+
+        navbar.appendChild(badge);
     }
 
     addLogoutButton() {

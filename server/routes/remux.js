@@ -3,6 +3,7 @@ const router = express.Router();
 const { spawn } = require('child_process');
 const db = require('../db');
 const { requireAuth } = require('../auth');
+const activityTracker = require('../services/activityTracker');
 
 router.use(requireAuth);
 
@@ -93,6 +94,18 @@ router.get('/', async (req, res) => {
     // Pipe stdout to response
     ffmpeg.stdout.pipe(res);
 
+    // This is a single long-lived request (not polled like the proxy
+    // passthrough), so heartbeat it periodically for the dashboard rather
+    // than touching once and going stale after ACTIVE_WINDOW_MS.
+    const touchActivity = () => activityTracker.touch({
+        userId: req.user.id,
+        username: req.user.username,
+        url,
+        type: 'Remux'
+    });
+    touchActivity();
+    const activityInterval = setInterval(touchActivity, 10000);
+
     // Log stderr (useful for debugging)
     ffmpeg.stderr.on('data', (data) => {
         const msg = data.toString();
@@ -105,6 +118,7 @@ router.get('/', async (req, res) => {
     // Cleanup on client disconnect
     req.on('close', () => {
         console.log('[Remux] Client disconnected, killing FFmpeg process');
+        clearInterval(activityInterval);
         ffmpeg.kill('SIGKILL');
     });
 

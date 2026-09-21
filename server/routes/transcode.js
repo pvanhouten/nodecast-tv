@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const db = require('../db');
 const transcodeSession = require('../services/transcodeSession');
+const activityTracker = require('../services/activityTracker');
 const { requireAuth, requireAdmin } = require('../auth');
 
 // A session's owner or an admin may act on it; anyone else gets 403.
@@ -37,6 +38,7 @@ router.use(requireAuth);
 
 // Start session cleanup interval
 transcodeSession.startCleanupInterval();
+activityTracker.startCleanupInterval();
 
 /**
  * Create a new transcode session
@@ -180,7 +182,13 @@ router.delete('/:sessionId', async (req, res) => {
  * GET /api/transcode/sessions
  */
 router.get('/sessions', requireAdmin, (req, res) => {
-    res.json(transcodeSession.getAllSessions());
+    // HLS transcode sessions have a real ffmpeg process behind them and can
+    // be stopped; activity-tracker entries (direct proxy/remux/transcode)
+    // are just a "someone is actively pulling this URL right now" signal
+    // with no single process to kill.
+    const sessions = transcodeSession.getAllSessions().map(s => ({ ...s, killable: true }));
+    const activity = activityTracker.getActive();
+    res.json([...sessions, ...activity]);
 });
 
 /**
@@ -271,6 +279,17 @@ router.get('/', async (req, res) => {
     // Pipe stdout to response
     ffmpeg.stdout.pipe(res);
 
+    // This is a single long-lived request (not polled like the session-
+    // based HLS path), so heartbeat it periodically for the dashboard.
+    const touchActivity = () => activityTracker.touch({
+        userId: req.user.id,
+        username: req.user.username,
+        url,
+        type: 'Transcode (direct)'
+    });
+    touchActivity();
+    const activityInterval = setInterval(touchActivity, 10000);
+
     // Log stderr (useful for debugging transcoding failures)
     ffmpeg.stderr.on('data', (data) => {
         const msg = data.toString();
@@ -281,6 +300,7 @@ router.get('/', async (req, res) => {
     // Cleanup on client disconnect
     req.on('close', () => {
         console.log('[Transcode] Client disconnected, killing FFmpeg process');
+        clearInterval(activityInterval);
         ffmpeg.kill('SIGKILL');
     });
 

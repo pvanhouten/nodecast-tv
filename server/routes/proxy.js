@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const { Readable } = require('stream');
 const { requireAuth, requireAdmin } = require('../auth');
+const activityTracker = require('../services/activityTracker');
 
 // All proxy routes require authentication
 router.use(requireAuth);
@@ -611,6 +612,13 @@ router.get('/stream', async (req, res) => {
             if (!url) {
                 return res.status(400).json({ error: 'URL required' });
             }
+
+            activityTracker.touch({
+                userId: req.user.id,
+                username: req.user.username,
+                url,
+                type: 'Live (proxy)'
+            });
 
             // Forward some headers to be more "transparent" back to the origin
             // Pluto TV uses multiple domains for content delivery
