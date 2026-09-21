@@ -1046,7 +1046,11 @@ class WatchPage {
             this.posterEl.onerror = null;
             this.posterEl.src = fallback;
         };
-        this.posterEl.src = this.content.poster || fallback;
+        const rawPoster = this.content.poster;
+        const posterSrc = rawPoster && rawPoster.startsWith('http')
+            ? `/api/proxy/image?url=${encodeURIComponent(rawPoster)}`
+            : (rawPoster || fallback);
+        this.posterEl.src = posterSrc;
         this.posterEl.alt = this.content.title || '';
         this.contentTitleEl.textContent = this.content.title || '';
         this.yearEl.textContent = this.content.year || '';
