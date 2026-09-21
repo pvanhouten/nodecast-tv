@@ -65,6 +65,8 @@ class TranscodeSession extends EventEmitter {
         this.error = null;
         this.startTime = Date.now();
         this.lastAccess = Date.now();
+        this.userId = options.userId || null;
+        this.username = options.username || null;
         this.options = {
             ffmpegPath: options.ffmpegPath || 'ffmpeg',
             userAgent: options.userAgent || 'Mozilla/5.0',
@@ -753,7 +755,9 @@ function getAllSessions() {
         status: s.status,
         startTime: s.startTime,
         lastAccess: s.lastAccess,
-        idleMs: Date.now() - s.lastAccess
+        idleMs: Date.now() - s.lastAccess,
+        userId: s.userId,
+        username: s.username
     }));
 }
 

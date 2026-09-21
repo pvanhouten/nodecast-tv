@@ -399,6 +399,7 @@
             <button class="tab" data-tab="transcode">Transcoding</button>
             <button class="tab" data-tab="content">Manage Content</button>
             <button class="tab" data-tab="users" id="users-tab" style="display:none;">Users</button>
+            <button class="tab" data-tab="streams" id="streams-tab" style="display:none;">Active Streams</button>
           </div>
 
           <!-- Sources Tab -->
@@ -807,6 +808,37 @@
                   </div>
                   <button type="submit" class="btn btn-primary">Add User</button>
                 </form>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active Streams Tab (Admin Only) -->
+          <div id="tab-streams" class="tab-content">
+            <div class="settings-section">
+              <div class="section-header">
+                <h3>Active Streams</h3>
+                <button class="btn btn-sm btn-secondary" id="streams-refresh-btn">Refresh</button>
+              </div>
+              <p class="hint">Transcode sessions currently running on the server</p>
+
+              <div class="user-list-container">
+                <table class="user-table">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Stream</th>
+                      <th>Status</th>
+                      <th>Started</th>
+                      <th>Idle</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="streams-list">
+                    <tr>
+                      <td colspan="6" class="hint">Loading streams...</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

@@ -12,7 +12,7 @@ const https = require('https');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const { Readable } = require('stream');
-const { requireAuth } = require('../auth');
+const { requireAuth, requireAdmin } = require('../auth');
 
 // All proxy routes require authentication
 router.use(requireAuth);
@@ -382,7 +382,7 @@ router.get('/epg/:sourceId', async (req, res) => {
 });
 
 // Clear cache (kept for compatibility)
-router.delete('/cache/:sourceId', (req, res) => {
+router.delete('/cache/:sourceId', requireAdmin, (req, res) => {
     const sourceId = req.params.sourceId;
     cache.clearSource(sourceId);
     res.json({ success: true });
@@ -549,7 +549,7 @@ router.get('/epg/:sourceId', async (req, res) => {
  * Clear cache for a source
  * DELETE /api/proxy/cache/:sourceId
  */
-router.delete('/cache/:sourceId', (req, res) => {
+router.delete('/cache/:sourceId', requireAdmin, (req, res) => {
     const sourceId = req.params.sourceId;
     cache.clearSource(sourceId);
     res.json({ success: true });
@@ -559,7 +559,7 @@ router.delete('/cache/:sourceId', (req, res) => {
  * Clear EPG cache for a source (legacy endpoint, calls clearSource)
  * DELETE /api/proxy/epg/:sourceId/cache
  */
-router.delete('/epg/:sourceId/cache', (req, res) => {
+router.delete('/epg/:sourceId/cache', requireAdmin, (req, res) => {
     const sourceId = req.params.sourceId;
     cache.clear('epg', sourceId, 'data');
     res.json({ success: true });

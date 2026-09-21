@@ -5,7 +5,15 @@ const path = require('path');
 const fs = require('fs').promises;
 const db = require('../db');
 const transcodeSession = require('../services/transcodeSession');
-const { requireAuth } = require('../auth');
+const { requireAuth, requireAdmin } = require('../auth');
+
+// A session's owner or an admin may act on it; anyone else gets 403.
+// Sessions created before this ownership tracking existed have no userId
+// on record - treat those as admin-only rather than open to any viewer.
+function canAccessSession(req, session) {
+    if (req.user.role === 'admin') return true;
+    return session.userId != null && session.userId === req.user.id;
+}
 
 // All transcode routes require authentication. The JWT strategy accepts the
 // token from the httpOnly cookie as well as the Authorization header, so
@@ -50,6 +58,8 @@ router.post('/session', async (req, res) => {
         const session = await transcodeSession.createSession(url, {
             ffmpegPath,
             userAgent,
+            userId: req.user.id,
+            username: req.user.username,
             seekOffset: seekOffset || 0,
             hwEncoder: settings.hwEncoder || 'software',
             maxResolution: settings.maxResolution || '1080p',
@@ -98,6 +108,9 @@ router.get('/:sessionId/stream.m3u8', async (req, res) => {
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
+    if (!canAccessSession(req, session)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
 
     const playlist = await session.getPlaylist();
     if (!playlist) {
@@ -125,6 +138,9 @@ router.get('/:sessionId/:segment', async (req, res) => {
     if (!session) {
         return res.status(404).json({ error: 'Session not found' });
     }
+    if (!canAccessSession(req, session)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
 
     const segmentPath = await session.getSegment(segment);
     if (!segmentPath) {
@@ -143,6 +159,14 @@ router.get('/:sessionId/:segment', async (req, res) => {
 router.delete('/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
 
+    const session = transcodeSession.getSession(sessionId);
+    if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!canAccessSession(req, session)) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
     try {
         await transcodeSession.removeSession(sessionId);
         res.json({ success: true });
@@ -155,7 +179,7 @@ router.delete('/:sessionId', async (req, res) => {
  * List all active sessions (for debugging)
  * GET /api/transcode/sessions
  */
-router.get('/sessions', (req, res) => {
+router.get('/sessions', requireAdmin, (req, res) => {
     res.json(transcodeSession.getAllSessions());
 });
 

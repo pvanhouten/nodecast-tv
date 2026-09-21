@@ -25,6 +25,9 @@ class SettingsPage {
 
         // User management (admin only)
         this.initUserManagement();
+
+        // Active streams dashboard (admin only)
+        this.initActiveStreams();
     }
 
     initPlayerSettings() {
@@ -335,6 +338,74 @@ class SettingsPage {
         }
     }
 
+    initActiveStreams() {
+        // Streams tab visibility is handled in show() method
+        const refreshBtn = document.getElementById('streams-refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => this.loadActiveStreams());
+        }
+    }
+
+    formatDuration(ms) {
+        const totalSeconds = Math.floor(ms / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        if (hours > 0) return `${hours}h ${minutes}m`;
+        if (minutes > 0) return `${minutes}m ${seconds}s`;
+        return `${seconds}s`;
+    }
+
+    async loadActiveStreams() {
+        const streamsList = document.getElementById('streams-list');
+        if (!streamsList) return;
+
+        try {
+            const sessions = await API.transcode.getSessions();
+
+            if (sessions.length === 0) {
+                streamsList.innerHTML = '<tr><td colspan="6" class="hint">No active streams</td></tr>';
+                return;
+            }
+
+            const now = Date.now();
+            streamsList.innerHTML = sessions.map(s => {
+                const statusBadge = s.status === 'running'
+                    ? '<span class="user-badge user-badge-admin">Running</span>'
+                    : `<span class="user-badge user-badge-viewer">${s.status}</span>`;
+
+                // Truncate long URLs for display; title attribute holds the full value
+                const shortUrl = s.url.length > 60 ? s.url.slice(0, 57) + '...' : s.url;
+
+                return `
+                <tr>
+                    <td>${s.username || '<span class="hint">Unknown</span>'}</td>
+                    <td title="${s.url.replace(/"/g, '&quot;')}">${shortUrl}</td>
+                    <td>${statusBadge}</td>
+                    <td>${this.formatDuration(now - s.startTime)} ago</td>
+                    <td>${this.formatDuration(s.idleMs)}</td>
+                    <td>
+                        <button class="btn btn-sm btn-error" onclick="window.app.pages.settings.stopStream('${s.id}')">Stop</button>
+                    </td>
+                </tr>
+            `}).join('');
+        } catch (err) {
+            console.error('Error loading active streams:', err);
+            streamsList.innerHTML = '<tr><td colspan="6" class="hint">Error loading streams</td></tr>';
+        }
+    }
+
+    async stopStream(sessionId) {
+        if (!confirm('Stop this stream?')) return;
+
+        try {
+            await API.transcode.stopSession(sessionId);
+            this.loadActiveStreams();
+        } catch (err) {
+            alert('Error stopping stream: ' + err.message);
+        }
+    }
+
     async loadUsers() {
         const userList = document.getElementById('user-list');
         if (!userList) return;
@@ -532,6 +603,18 @@ class SettingsPage {
         if (tabName === 'transcode') {
             this.loadHardwareInfo();
         }
+
+        // Load active streams when switching to that tab, and keep it
+        // refreshed while it's visible. Stop refreshing once you leave.
+        if (tabName === 'streams') {
+            this.loadActiveStreams();
+            if (!this.streamsRefreshInterval) {
+                this.streamsRefreshInterval = setInterval(() => this.loadActiveStreams(), 5000);
+            }
+        } else if (this.streamsRefreshInterval) {
+            clearInterval(this.streamsRefreshInterval);
+            this.streamsRefreshInterval = null;
+        }
     }
 
     async show() {
@@ -540,6 +623,10 @@ class SettingsPage {
             const usersTab = document.getElementById('users-tab');
             if (usersTab) {
                 usersTab.style.display = 'block';
+            }
+            const streamsTab = document.getElementById('streams-tab');
+            if (streamsTab) {
+                streamsTab.style.display = 'block';
             }
         }
 

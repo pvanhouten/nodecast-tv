@@ -166,6 +166,12 @@ const API = {
         create: (data) => API.request('POST', '/auth/users', data),
         update: (id, data) => API.request('PUT', `/auth/users/${id}`, data),
         delete: (id) => API.request('DELETE', `/auth/users/${id}`)
+    },
+
+    // Transcode sessions (admin only)
+    transcode: {
+        getSessions: () => API.request('GET', '/transcode/sessions'),
+        stopSession: (id) => API.request('DELETE', `/transcode/${id}`)
     }
 };
 
