@@ -11,7 +11,6 @@ const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
-const { Readable } = require('stream');
 const { requireAuth, requireAdmin } = require('../auth');
 const activityTracker = require('../services/activityTracker');
 
@@ -602,44 +601,118 @@ router.post('/epg/:sourceId/channels', async (req, res) => {
  * This handles CORS for streams that don't allow cross-origin
  * Supports HTTP Range requests for video seeking
  */
+/**
+ * Fetch binary content (segments, keys, images) via curl instead of Node's
+ * fetch()/https. Node's own HTTP client hangs indefinitely (no error, no
+ * data) against some providers' CDNs on larger transfers - confirmed with
+ * both fetch() and the raw https module against Eaglecast, while curl and
+ * wget succeed instantly against the identical URL over the identical
+ * network path. Likely TLS-fingerprint-based throttling on Node's distinct
+ * TLS ClientHello. Manifests are unaffected (small, text) and keep using
+ * the fetch()-based path below, which has to read+rewrite the whole body
+ * anyway.
+ */
+function streamBinaryViaCurl(req, res, url, headers, rangeHeader, defaultContentType = 'application/octet-stream') {
+    const args = ['-sS', '--fail', '--location', '--max-time', '30'];
+    for (const [key, value] of Object.entries(headers)) {
+        args.push('-H', `${key}: ${value}`);
+    }
+
+    let statusCode = 200;
+    if (rangeHeader) {
+        const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
+        if (match) {
+            args.push('--range', `${match[1]}-${match[2]}`);
+            statusCode = 206;
+        }
+    }
+    args.push(url);
+
+    const ext = url.split('?')[0].split('.').pop().toLowerCase();
+    const contentTypeByExt = {
+        ts: 'video/mp2t',
+        key: 'application/octet-stream',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        webp: 'image/webp',
+        gif: 'image/gif'
+    };
+
+    const curlProcess = spawn('curl', args);
+    let stderrOutput = '';
+    let bytesSeen = false;
+
+    curlProcess.stdout.once('data', () => {
+        bytesSeen = true;
+        res.status(statusCode);
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Content-Type', contentTypeByExt[ext] || defaultContentType);
+    });
+    curlProcess.stdout.pipe(res);
+
+    curlProcess.stderr.on('data', (d) => { stderrOutput += d.toString(); });
+
+    curlProcess.on('error', (err) => {
+        console.error('[Proxy] curl spawn failed:', err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'curl spawn failed', details: err.message });
+        }
+    });
+
+    curlProcess.on('close', (code) => {
+        if (code !== 0 && !bytesSeen && !res.headersSent) {
+            console.error(`[Proxy] curl exited ${code} for ${url.substring(0, 80)}...: ${stderrOutput.trim()}`);
+            res.status(502).json({ error: 'Upstream fetch failed', details: stderrOutput.trim() });
+        }
+    });
+
+    req.on('close', () => curlProcess.kill('SIGKILL'));
+}
+
 router.get('/stream', async (req, res) => {
+    let { url } = req.query;
+    if (!url) {
+        return res.status(400).json({ error: 'URL required' });
+    }
+
+    activityTracker.touch({
+        userId: req.user.id,
+        username: req.user.username,
+        url,
+        type: 'Live (proxy)'
+    });
+
+    // Forward some headers to be more "transparent" back to the origin
+    // Pluto TV uses multiple domains for content delivery
+    const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
+    const isPluto = plutoDomains.some(domain => url.includes(domain));
+
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        // Using https and matching the origin of the request
+        'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
+        'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
+    };
+
+    // Forward Range header for video seeking support
+    const rangeHeader = req.get('range');
+    if (rangeHeader) {
+        headers['Range'] = rangeHeader;
+    }
+
+    const isM3u8 = url.split('?')[0].toLowerCase().endsWith('.m3u8');
+    if (!isM3u8) {
+        return streamBinaryViaCurl(req, res, url, headers, rangeHeader);
+    }
+
     const maxRetries = 2;
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            let { url } = req.query;
-            if (!url) {
-                return res.status(400).json({ error: 'URL required' });
-            }
-
-            activityTracker.touch({
-                userId: req.user.id,
-                username: req.user.username,
-                url,
-                type: 'Live (proxy)'
-            });
-
-            // Forward some headers to be more "transparent" back to the origin
-            // Pluto TV uses multiple domains for content delivery
-            const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
-            const isPluto = plutoDomains.some(domain => url.includes(domain));
-
-            const headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                // Using https and matching the origin of the request
-                'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
-                'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
-            };
-
-            // Forward Range header for video seeking support
-            const rangeHeader = req.get('range');
-            if (rangeHeader) {
-                headers['Range'] = rangeHeader;
-            }
-
             const response = await fetch(url, { headers });
 
             // Retry on 5xx errors (transient upstream issues)
@@ -658,118 +731,52 @@ router.get('/stream', async (req, res) => {
                 return res.status(response.status).send(`Failed to fetch stream: ${response.statusText}`);
             }
 
-            const contentType = response.headers.get('content-type') || '';
             res.set('Access-Control-Allow-Origin', '*');
 
-            // Forward range-related headers for video seeking support
-            const contentLength = response.headers.get('content-length');
-            const contentRange = response.headers.get('content-range');
-            const acceptRanges = response.headers.get('accept-ranges');
+            // Manifest only from here on (binary content already returned
+            // early via streamBinaryViaCurl above) - read the whole body to
+            // rewrite embedded URLs, then send.
+            const buffer = Buffer.from(await response.arrayBuffer());
+            const finalUrl = response.url || url;
+            console.log(`[Proxy] Processing HLS manifest from: ${finalUrl.substring(0, 80)}...`);
+            res.set('Content-Type', 'application/vnd.apple.mpegurl');
 
-            if (contentLength) {
-                res.set('Content-Length', contentLength);
-            }
-            if (contentRange) {
-                res.set('Content-Range', contentRange);
-            }
-            if (acceptRanges) {
-                res.set('Accept-Ranges', acceptRanges);
-            } else if (contentLength && !contentRange) {
-                // If server supports content-length but didn't explicitly state accept-ranges,
-                // we can safely assume it supports byte ranges
-                res.set('Accept-Ranges', 'bytes');
-            }
+            let manifest = buffer.toString('utf-8');
 
-            // Set status code (206 for partial content when range request was made)
-            res.status(response.status);
+            const finalUrlObj = new URL(finalUrl);
+            const baseUrl = finalUrlObj.origin + finalUrlObj.pathname.substring(0, finalUrlObj.pathname.lastIndexOf('/') + 1);
 
-            // Create an async iterator for the response body
-            const iterator = response.body[Symbol.asyncIterator]();
-            const first = await iterator.next();
-
-            if (first.done) {
-                res.set('Content-Type', contentType || 'application/octet-stream');
-                return res.end();
-            }
-
-            const firstChunk = Buffer.from(first.value);
-
-            // Peek at first bytes to check for HLS manifest ({ #EXTM3U })
-            const textPrefix = firstChunk.subarray(0, 7).toString('utf8');
-            const contentLooksLikeHls = textPrefix === '#EXTM3U';
-
-            if (contentLooksLikeHls) {
-                // HLS Manifest: We must read the WHOLE manifest to rewrite it
-                const chunks = [firstChunk];
-
-                // Consume the rest of the stream
-                let result = await iterator.next();
-                while (!result.done) {
-                    chunks.push(Buffer.from(result.value));
-                    result = await iterator.next();
+            manifest = manifest.split('\n').map(line => {
+                const trimmed = line.trim();
+                if (trimmed === '' || trimmed.startsWith('#')) {
+                    // Handle both URI="..." and URI='...' formats
+                    if (trimmed.includes('URI=')) {
+                        // Replace both double and single quoted URIs
+                        return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
+                            try {
+                                const absoluteUrl = new URL(p1, baseUrl).href;
+                                return `URI="${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}"`;
+                            } catch (e) {
+                                return match;
+                            }
+                        });
+                    }
+                    return line;
                 }
 
-                const buffer = Buffer.concat(chunks);
-                const finalUrl = response.url || url;
-                console.log(`[Proxy] Processing HLS manifest from: ${finalUrl.substring(0, 80)}...`);
-                res.set('Content-Type', 'application/vnd.apple.mpegurl');
-
-                let manifest = buffer.toString('utf-8');
-
-                const finalUrlObj = new URL(finalUrl);
-                const baseUrl = finalUrlObj.origin + finalUrlObj.pathname.substring(0, finalUrlObj.pathname.lastIndexOf('/') + 1);
-
-                manifest = manifest.split('\n').map(line => {
-                    const trimmed = line.trim();
-                    if (trimmed === '' || trimmed.startsWith('#')) {
-                        // Handle both URI="..." and URI='...' formats
-                        if (trimmed.includes('URI=')) {
-                            // Replace both double and single quoted URIs
-                            return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
-                                try {
-                                    const absoluteUrl = new URL(p1, baseUrl).href;
-                                    return `URI="${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}"`;
-                                } catch (e) {
-                                    return match;
-                                }
-                            });
-                        }
-                        return line;
+                // Stream URL handling
+                try {
+                    let absoluteUrl;
+                    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+                        absoluteUrl = trimmed;
+                    } else {
+                        absoluteUrl = new URL(trimmed, baseUrl).href;
                     }
+                    return `${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}`;
+                } catch (e) { return line; }
+            }).join('\n');
 
-                    // Stream URL handling
-                    try {
-                        let absoluteUrl;
-                        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-                            absoluteUrl = trimmed;
-                        } else {
-                            absoluteUrl = new URL(trimmed, baseUrl).href;
-                        }
-                        return `${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}`;
-                    } catch (e) { return line; }
-                }).join('\n');
-
-                return res.send(manifest);
-            }
-
-            // Binary content (Video Segment or Key): Collect and send
-            console.log(`[Proxy] Serving binary content (${contentType})`);
-            res.set('Content-Type', contentType || 'application/octet-stream');
-
-            // For small files (like encryption keys), collect all data and send at once
-            // This ensures proper Content-Length and response completion
-            const chunks = [firstChunk];
-            let result = await iterator.next();
-            while (!result.done) {
-                chunks.push(Buffer.from(result.value));
-                result = await iterator.next();
-            }
-            const fullContent = Buffer.concat(chunks);
-
-            // Set Content-Length for proper client handling
-            res.set('Content-Length', fullContent.length);
-            res.send(fullContent);
-            return; // Success - exit the retry loop
+            return res.send(manifest);
 
         } catch (err) {
             lastError = err;
@@ -794,42 +801,20 @@ router.get('/stream', async (req, res) => {
  * GET /api/proxy/image?url=...
  */
 router.get('/image', async (req, res) => {
-    try {
-        const { url } = req.query;
-        if (!url) {
-            return res.status(400).json({ error: 'URL required' });
-        }
-
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/*,*/*;q=0.8'
-            }
-        });
-
-        if (!response.ok) {
-            return res.status(response.status).send('Failed to fetch image');
-        }
-
-        const contentType = response.headers.get('content-type') || 'image/png';
-        res.set('Content-Type', contentType);
-        res.set('Access-Control-Allow-Origin', '*');
-        res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
-
-        // Efficiently pipe the response body
-        if (response.body) {
-            // response.body is an AsyncIterable in standard fetch/undici
-            // Readable.from converts it to a Node.js Readable stream
-            const stream = Readable.from(response.body);
-            stream.pipe(res);
-        } else {
-            res.end();
-        }
-
-    } catch (err) {
-        console.error('Image proxy error:', err.message);
-        res.status(500).send('Image proxy error');
+    const { url } = req.query;
+    if (!url) {
+        return res.status(400).json({ error: 'URL required' });
     }
+
+    // Images are always binary - same Node-fetch-hangs issue as video
+    // segments applies here (many icon/poster CDNs sit behind the same
+    // kind of edge that throttles Node's TLS client), so use curl too.
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/*,*/*;q=0.8'
+    };
+    res.set('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+    streamBinaryViaCurl(req, res, url, headers, null, 'image/png');
 });
 
 module.exports = router;
