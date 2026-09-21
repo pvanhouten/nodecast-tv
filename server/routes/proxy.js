@@ -612,6 +612,42 @@ router.post('/epg/:sourceId/channels', async (req, res) => {
  * the fetch()-based path below, which has to read+rewrite the whole body
  * anyway.
  */
+/**
+ * Reverse-map a proxied Xtream manifest URL back to the channel/movie/
+ * series name it belongs to, for display in the admin active-streams
+ * dashboard instead of a raw URL (which also embeds the source's
+ * plaintext credentials). Returns null if it can't be resolved (Pluto TV,
+ * M3U sources, or no matching playlist_items row).
+ */
+async function resolveStreamLabel(url) {
+    try {
+        const allSources = await sources.getAll();
+        for (const source of allSources) {
+            if (source.type !== 'xtream' || !source.username || !source.password) continue;
+
+            const baseUrl = source.url.replace(/\/$/, '');
+            const prefix = `${baseUrl}/`;
+            if (!url.startsWith(prefix)) continue;
+
+            const rest = url.slice(prefix.length);
+            const match = rest.match(/^(live|movie|series)\/([^/]+)\/([^/]+)\/([^/.]+)\.[^/]+$/);
+            if (!match) continue;
+
+            const [, type, username, password, streamId] = match;
+            if (username !== source.username || password !== source.password) continue;
+
+            const db = getDb();
+            const row = db.prepare(
+                'SELECT name FROM playlist_items WHERE source_id = ? AND type = ? AND item_id = ?'
+            ).get(source.id, type, streamId);
+            if (row) return row.name;
+        }
+    } catch (e) {
+        console.warn('[Proxy] Failed to resolve stream label:', e.message);
+    }
+    return null;
+}
+
 function streamBinaryViaCurl(req, res, url, headers, rangeHeader, defaultContentType = 'application/octet-stream') {
     const args = ['-sS', '--fail', '--location', '--max-time', '30'];
     for (const [key, value] of Object.entries(headers)) {
@@ -676,13 +712,6 @@ router.get('/stream', async (req, res) => {
         return res.status(400).json({ error: 'URL required' });
     }
 
-    activityTracker.touch({
-        userId: req.user.id,
-        username: req.user.username,
-        url,
-        type: 'Live (proxy)'
-    });
-
     // Forward some headers to be more "transparent" back to the origin
     // Pluto TV uses multiple domains for content delivery
     const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
@@ -705,8 +734,27 @@ router.get('/stream', async (req, res) => {
 
     const isM3u8 = url.split('?')[0].toLowerCase().endsWith('.m3u8');
     if (!isM3u8) {
+        activityTracker.touch({
+            userId: req.user.id,
+            username: req.user.username,
+            url,
+            type: 'Live (proxy)'
+        });
         return streamBinaryViaCurl(req, res, url, headers, rangeHeader);
     }
+
+    // Resolve a human-readable channel/movie/series name for the manifest
+    // URL - this is what actually establishes/updates the dashboard's
+    // "which stream" identity (see activityTracker.js), so it only needs
+    // doing here, not on every subsequent segment request.
+    const label = await resolveStreamLabel(url);
+    activityTracker.touch({
+        userId: req.user.id,
+        username: req.user.username,
+        url,
+        label,
+        type: 'Live (proxy)'
+    });
 
     const maxRetries = 2;
     let lastError = null;

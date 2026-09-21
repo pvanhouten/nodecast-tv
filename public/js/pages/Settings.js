@@ -376,8 +376,10 @@ class SettingsPage {
                     ? `<span class="user-badge user-badge-admin">${statusLabel}</span>`
                     : `<span class="user-badge user-badge-viewer">${s.status}</span>`;
 
-                // Truncate long URLs for display; title attribute holds the full value
-                const shortUrl = s.url.length > 60 ? s.url.slice(0, 57) + '...' : s.url;
+                // Prefer a resolved channel/movie/series name over the raw
+                // URL (which also embeds plaintext source credentials);
+                // the full URL is still available in the tooltip.
+                const displayText = s.label || (s.url.length > 60 ? s.url.slice(0, 57) + '...' : s.url);
 
                 const action = s.killable
                     ? `<button class="btn btn-sm btn-error" onclick="window.app.pages.settings.stopStream('${s.id}')">Stop</button>`
@@ -386,7 +388,7 @@ class SettingsPage {
                 return `
                 <tr>
                     <td>${s.username || '<span class="hint">Unknown</span>'}</td>
-                    <td title="${s.url.replace(/"/g, '&quot;')}">${shortUrl}</td>
+                    <td title="${s.url.replace(/"/g, '&quot;')}">${displayText}</td>
                     <td>${statusBadge}</td>
                     <td>${this.formatDuration(now - s.startTime)} ago</td>
                     <td>${this.formatDuration(s.idleMs)}</td>

@@ -41,8 +41,12 @@ function identityFor(url) {
 
 /**
  * Record that a user is actively pulling data for a URL right now.
+ * `label`, if provided (resolved by the caller - see proxy.js's
+ * resolveStreamLabel), is a human-readable channel/movie/series name to
+ * show instead of the raw URL, which also embeds plaintext credentials
+ * for Xtream sources.
  */
-function touch({ userId, username, url, type }) {
+function touch({ userId, username, url, type, label }) {
     const now = Date.now();
     const existing = activity.get(userId);
     const manifest = isManifestUrl(url);
@@ -51,6 +55,7 @@ function touch({ userId, username, url, type }) {
         activity.set(userId, {
             username,
             url,
+            label: label || null,
             identity: manifest ? identityFor(url) : url,
             type,
             startTime: now,
@@ -68,13 +73,14 @@ function touch({ userId, username, url, type }) {
             // update what's displayed and restart the "started" clock.
             existing.identity = newIdentity;
             existing.url = url;
+            existing.label = label || null;
             existing.startTime = now;
         }
     }
     // Non-manifest (segment) touches only keep the entry alive; they never
-    // change the displayed URL or reset the timer, since segment paths for
-    // the same channel churn constantly and often don't share a directory
-    // with the manifest at all.
+    // change the displayed URL/label or reset the timer, since segment
+    // paths for the same channel churn constantly and often don't share a
+    // directory with the manifest at all.
 }
 
 /**
@@ -90,6 +96,7 @@ function getActive() {
             result.push({
                 id: null, // no killable process behind this entry
                 url: entry.url,
+                label: entry.label,
                 status: entry.type,
                 startTime: entry.startTime,
                 lastAccess: entry.lastAccess,
