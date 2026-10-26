@@ -93,7 +93,10 @@ function analyzeProbeResult(probeResult, url) {
 
     // Check codec compatibility
     const videoOk = BROWSER_VIDEO_CODECS.some(c => videoCodec.includes(c));
-    const audioOk = BROWSER_AUDIO_CODECS.some(c => audioCodec.includes(c));
+    // HE-AAC (SBR) fails to decode in Chrome once it is copied into MP4, so treat it like any other unsupported
+    // audio and let the smart transcode path re-encode just the audio.
+    const isHeAac = audioCodec.includes('aac') && /he-aac|sbr/i.test(audioStream?.profile || '');
+    const audioOk = BROWSER_AUDIO_CODECS.some(c => audioCodec.includes(c)) && !isHeAac;
 
     // Browser-safe containers
     // Note: We exclude 'webm' because ffprobe reports MKV as "matroska,webm", 
@@ -133,7 +136,6 @@ function analyzeProbeResult(probeResult, url) {
         audio: audioCodec,
         width: videoStream?.width || 0,
         height: videoStream?.height || 0,
-        audioProfile: audioStream?.profile || '',
         audioChannels: audioStream?.channels || 0, // For Smart Audio Copy
         container: container,
         compatible: compatible,
@@ -202,11 +204,11 @@ router.get('/', async (req, res) => {
     }
 });
 
-// Audio codec and profile from a recent probe of this URL, or null. Lets /api/remux pick the right audio handling.
-router.cachedAudioInfo = (url) => {
+// Audio codec from a recent probe of this URL, or null. Lets /api/remux decide whether the AAC ADTS fix applies.
+router.cachedAudioCodec = (url) => {
     for (const [key, entry] of probeCache) {
         if ((key === url || key.startsWith(`${url}|`)) && Date.now() - entry.timestamp < CACHE_TTL) {
-            return { codec: entry.result.audio || '', profile: entry.result.audioProfile || '' };
+            return entry.result.audio || null;
         }
     }
     return null;

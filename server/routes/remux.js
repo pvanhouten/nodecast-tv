@@ -33,16 +33,10 @@ router.get('/', async (req, res) => {
     console.log(`[Remux] Starting remux for: ${url}`);
     console.log(`[Remux] Using User-Agent: ${settings.userAgentPreset}`);
 
-    // Two AAC problems when putting MPEG-TS audio into MP4:
-    // - ADTS framing is rejected by the MP4 muxer ("Malformed AAC bitstream"); aac_adtstoasc fixes it but only
-    //   accepts AAC, so it is applied when the probe says the audio is AAC.
-    // - HE-AAC (SBR) copied into MP4 fails to decode in Chrome, so that audio is re-encoded to plain AAC-LC.
-    //   Video is still copied, so this stays cheap.
-    const audio = probeRoute.cachedAudioInfo(url);
-    const isAac = !!audio && audio.codec.toLowerCase().includes('aac');
-    const isHeAac = isAac && /he-aac|sbr|\bhe\b/i.test(audio.profile);
-    const audioArgs = isHeAac ? ['-c:a', 'aac', '-b:a', '128k', '-ac', '2']
-        : isAac ? ['-c:a', 'copy', '-bsf:a', 'aac_adtstoasc'] : ['-c:a', 'copy'];
+    // AAC inside MPEG-TS is ADTS-framed, which the MP4 muxer rejects ("Malformed AAC bitstream"). The filter only
+    // accepts AAC, so apply it when the probe says the audio is AAC.
+    const audioCodec = probeRoute.cachedAudioCodec(url);
+    const aacFix = audioCodec && audioCodec.toLowerCase().includes('aac') ? ['-bsf:a', 'aac_adtstoasc'] : [];
 
     // FFmpeg arguments for pure remux (no encoding)
     // Very lightweight - just changes container from TS to fragmented MP4
@@ -73,11 +67,12 @@ router.get('/', async (req, res) => {
         '-map', '0:a',
         // Drop subtitles (-sn) and data (-dn) explicitly
         '-sn', '-dn',
-        // Copy video without re-encoding; audio handling is chosen above
-        '-c:v', 'copy',
-        ...audioArgs,
+        // Copy streams without re-encoding
+        '-c', 'copy',
         // Ensure extradata is correctly extracted/converted (fixes Annex B -> AVCC issues in Firefox)
         '-bsf:v', 'dump_extra',
+        // aac_adtstoasc only works for AAC (it breaks AC3/EAC3/MP3), so it is added above only for AAC audio.
+        ...aacFix,
         // Handle timestamp discontinuities at output
         '-fps_mode', 'passthrough',
         '-max_muxing_queue_size', '1024',
