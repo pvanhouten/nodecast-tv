@@ -133,6 +133,7 @@ function analyzeProbeResult(probeResult, url) {
         audio: audioCodec,
         width: videoStream?.width || 0,
         height: videoStream?.height || 0,
+        audioProfile: audioStream?.profile || '',
         audioChannels: audioStream?.channels || 0, // For Smart Audio Copy
         container: container,
         compatible: compatible,
@@ -201,11 +202,11 @@ router.get('/', async (req, res) => {
     }
 });
 
-// Audio codec from a recent probe of this URL, or null. Lets /api/remux decide whether the AAC ADTS fix applies.
-router.cachedAudioCodec = (url) => {
+// Audio codec and profile from a recent probe of this URL, or null. Lets /api/remux pick the right audio handling.
+router.cachedAudioInfo = (url) => {
     for (const [key, entry] of probeCache) {
         if ((key === url || key.startsWith(`${url}|`)) && Date.now() - entry.timestamp < CACHE_TTL) {
-            return entry.result.audio || null;
+            return { codec: entry.result.audio || '', profile: entry.result.audioProfile || '' };
         }
     }
     return null;
