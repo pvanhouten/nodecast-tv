@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const db = require('../db');
 const { requireAuth } = require('../auth');
 const activityTracker = require('../services/activityTracker');
+const probeRoute = require('./probe');
 
 router.use(requireAuth);
 
@@ -31,6 +32,11 @@ router.get('/', async (req, res) => {
 
     console.log(`[Remux] Starting remux for: ${url}`);
     console.log(`[Remux] Using User-Agent: ${settings.userAgentPreset}`);
+
+    // AAC inside MPEG-TS is ADTS-framed, which the MP4 muxer rejects ("Malformed AAC bitstream"). The filter only
+    // accepts AAC, so apply it when the probe says the audio is AAC.
+    const audioCodec = probeRoute.cachedAudioCodec(url);
+    const aacFix = audioCodec && audioCodec.toLowerCase().includes('aac') ? ['-bsf:a', 'aac_adtstoasc'] : [];
 
     // FFmpeg arguments for pure remux (no encoding)
     // Very lightweight - just changes container from TS to fragmented MP4
@@ -65,9 +71,8 @@ router.get('/', async (req, res) => {
         '-c', 'copy',
         // Ensure extradata is correctly extracted/converted (fixes Annex B -> AVCC issues in Firefox)
         '-bsf:v', 'dump_extra',
-        // NOTE: We intentionally do NOT use -bsf:a aac_adtstoasc here
-        // That filter only works for AAC audio and breaks AC3/EAC3/MP3.
-        // If AAC audio from MPEG-TS fails in MP4, use /api/transcode instead.
+        // aac_adtstoasc only works for AAC (it breaks AC3/EAC3/MP3), so it is added above only for AAC audio.
+        ...aacFix,
         // Handle timestamp discontinuities at output
         '-fps_mode', 'passthrough',
         '-max_muxing_queue_size', '1024',

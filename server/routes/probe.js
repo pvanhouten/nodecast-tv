@@ -201,4 +201,14 @@ router.get('/', async (req, res) => {
     }
 });
 
+// Audio codec from a recent probe of this URL, or null. Lets /api/remux decide whether the AAC ADTS fix applies.
+router.cachedAudioCodec = (url) => {
+    for (const [key, entry] of probeCache) {
+        if ((key === url || key.startsWith(`${url}|`)) && Date.now() - entry.timestamp < CACHE_TTL) {
+            return entry.result.audio || null;
+        }
+    }
+    return null;
+};
+
 module.exports = router;
