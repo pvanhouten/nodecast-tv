@@ -113,7 +113,8 @@ test('cross-site requests and spoofed forwarded hosts are blocked, and login att
     assert.equal((await request('/api/auth/setup', { ...post({ username: 'Admin', password: 'password123' }), headers: { Origin: base } })).status, 201);
     assert.equal((await request('/api/sources', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
     assert.equal((await request('/api/auth/login', { ...post({ username: 'Admin', password: 'password123' }), headers: { Origin: 'null' } })).status, 403);
-    for (let i = 0; i < 19; i++) assert.equal((await request('/api/auth/login', post({ username: 'Nobody', password: 'wrong' }))).status, 401);
+    // Fork: one login throttle (20 attempts per 15 minutes per IP, login requests only), so 20 attempts pass and the 21st is limited.
+    for (let i = 0; i < 20; i++) assert.equal((await request('/api/auth/login', post({ username: 'Nobody', password: 'wrong' }))).status, 401);
     const limited = await request('/api/auth/login', post({ username: 'Nobody', password: 'wrong' }));
     assert.equal(limited.status, 429);
     assert.ok(Number(limited.headers.get('Retry-After')) > 0);
