@@ -293,3 +293,12 @@ test('every ffmpeg protocol whitelist allows httpproxy, which ffmpeg needs when 
         for (const list of lists) assert.ok(list.includes('httpproxy'), file);
     }
 });
+
+test('channel names and guide shows carry hover text with the full name', { timeout: 60_000 }, () => {
+    const list = fs.readFileSync(path.join(root, 'public/js/components/ChannelList.js'), 'utf8');
+    const guide = fs.readFileSync(path.join(root, 'public/js/components/EpgGuide.js'), 'utf8');
+    assert.equal((list.match(/<div class="channel-name">/g) || []).length, 0, 'every channel name needs a title');
+    assert.ok((list.match(/<div class="channel-name" title=/g) || []).length >= 3);
+    assert.match(guide, /<span class="epg-channel-name" title=/);
+    assert.match(guide, /<div class="epg-program \$\{isCurrent \? 'current' : ''\}"\s+style="width: \$\{width\}px;"\s+title=/);
+});
