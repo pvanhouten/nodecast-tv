@@ -655,7 +655,7 @@ async function resolveStreamLabel(url) {
 }
 
 function streamBinaryViaCurl(req, res, url, headers, rangeHeader, defaultContentType = 'application/octet-stream') {
-    const args = ['-sS', '--fail', '--location', '--max-time', '30'];
+    const args = ['-sS', '--fail', '--location', '--proto', '=http,https', '--proto-redir', '=http,https', '--max-redirs', '5', '--max-time', '30'];
     for (const [key, value] of Object.entries(headers)) {
         args.push('-H', `${key}: ${value}`);
     }

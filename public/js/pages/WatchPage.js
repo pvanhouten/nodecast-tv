@@ -1184,12 +1184,17 @@ class WatchPage {
         }
     }
 
+    /** Route provider images through the server so the browser never contacts the provider directly. */
+    proxiedImage(url) {
+        return typeof url === 'string' && /^https?:/i.test(url) ? `/api/proxy/image?url=${encodeURIComponent(url)}` : url;
+    }
+
     renderRecommendedGrid(movies, sourceId) {
         if (!this.recommendedGrid) return;
 
         this.recommendedGrid.innerHTML = movies.map(movie => `
             <div class="watch-recommended-card" data-id="${movie.stream_id}" data-source="${sourceId}">
-                <img src="${movie.stream_icon || movie.cover || '/img/placeholder.png'}" 
+                <img src="${this.proxiedImage(movie.stream_icon || movie.cover) || '/img/placeholder.png'}" 
                      alt="${movie.name}" 
                      onerror="this.onerror=null;this.src='/img/placeholder.png'" loading="lazy">
                 <p>${movie.name}</p>

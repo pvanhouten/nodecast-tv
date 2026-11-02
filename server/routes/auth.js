@@ -6,15 +6,19 @@ const { requestLimit } = require('../services/requestLimits');
 const authTokens = require('../services/authTokens');
 const loginLimit = requestLimit(20);
 
-// Very small in-memory rate limiter for the local-password login route.
+// The one throttle on the local-password login route: LOGIN_MAX_ATTEMPTS per IP per 15 minutes.
+// A per-minute limiter on top of this would allow far more attempts over time, so there is only this one.
 // Not distributed/persistent by design - this is a single-instance app.
 const loginAttempts = new Map(); // ip -> { count, firstAttemptAt }
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_ATTEMPTS = 30;
+const LOGIN_MAX_ATTEMPTS = 20;
 
 function loginRateLimit(req, res, next) {
     const key = req.ip;
     const now = Date.now();
+    if (loginAttempts.size > 1000) {
+        for (const [ip, attempt] of loginAttempts) if (now - attempt.firstAttemptAt > LOGIN_WINDOW_MS) loginAttempts.delete(ip);
+    }
     const entry = loginAttempts.get(key);
 
     if (!entry || now - entry.firstAttemptAt > LOGIN_WINDOW_MS) {
@@ -147,7 +151,7 @@ router.post('/setup', loginLimit, async (req, res) => {
  * Login with Passport Local Strategy
  * POST /api/auth/login
  */
-router.post('/login', loginRateLimit, loginLimit, (req, res, next) => {
+router.post('/login', loginRateLimit, (req, res, next) => {
     if (typeof req.body.username !== 'string' || typeof req.body.password !== 'string' || req.body.password.length > 1024) {
         return res.status(400).json({ error: 'Username and password required' });
     }

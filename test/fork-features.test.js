@@ -302,3 +302,79 @@ test('channel names and guide shows carry hover text with the full name', { time
     assert.match(guide, /<span class="epg-channel-name" title=/);
     assert.match(guide, /<div class="epg-program \$\{isCurrent \? 'current' : ''\}"\s+style="width: \$\{width\}px;"\s+title=/);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Security: login throttle, Active Streams "Stop", and the VPN-proxy / privacy paths
+// ---------------------------------------------------------------------------------------------
+
+test('login is throttled to 20 attempts per 15 minutes per IP, and a correct password is blocked while throttled', { timeout: 60_000 }, async t => {
+    const { request } = await serverFixture(t);
+    assert.equal((await request('/api/auth/setup', post({ username: 'Admin', password: 'password123' }))).status, 201);
+    // Cheaper than 20 bcrypt compares: an unknown user fails fast, and still counts as an attempt.
+    for (let attempt = 1; attempt <= 20; attempt++) {
+        const response = await request('/api/auth/login', post({ username: 'nobody', password: 'wrong' }));
+        assert.equal(response.status, 401, `attempt ${attempt}`);
+    }
+    const blocked = await request('/api/auth/login', post({ username: 'Admin', password: 'password123' }));
+    assert.equal(blocked.status, 429);
+    assert.match(String(blocked.body?.error), /too many/i);
+});
+
+test('an admin can stop anyone\'s stream from Active Streams; viewers can only stop their own', { timeout: 60_000 }, async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodecast-stop-test-'));
+    const previousCwd = process.cwd();
+    process.env.NODECAST_DATA_DIR = dir;
+    process.env.NODECAST_DISABLE_BACKGROUND_JOBS = 'true';
+    process.chdir(dir); // the transcode cache lives under the working directory
+    t.after(() => {
+        process.chdir(previousCwd);
+        assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+    const service = require('../server/services/transcodeSession');
+    const express = require('express');
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => { req.user = JSON.parse(req.get('x-test-user')); next(); }); // stands in for requireAuth
+    app.use('/api/transcode', require('../server/routes/transcode'));
+    const server = http.createServer(app);
+    const port = await listen(server);
+    t.after(() => server.close());
+
+    const viewerA = { id: 11, username: 'A', role: 'viewer' }, viewerB = { id: 12, username: 'B', role: 'viewer' };
+    const admin = { id: 1, username: 'Admin', role: 'admin' };
+    const stop = (user, id) => fetch(`http://127.0.0.1:${port}/api/transcode/${id}`, { method: 'DELETE', headers: { 'x-test-user': JSON.stringify(user) } });
+    const make = async user => {
+        const session = await service.createSession(`http://provider.test/${user.id}`, { ownerId: user.id, userId: user.id, username: user.username, videoMode: 'copy' });
+        session.status = 'running';
+        return session;
+    };
+
+    const a1 = await make(viewerA);
+    assert.equal((await stop(viewerB, a1.id)).status, 403, 'another viewer cannot stop it');
+    assert.ok(service.getSession(a1.id), 'and it is still running');
+    assert.equal((await stop(viewerA, a1.id)).status, 200, 'the owner can stop it');
+    assert.equal(service.getSession(a1.id), undefined);
+
+    const a2 = await make(viewerA);
+    assert.equal((await stop(admin, a2.id)).status, 200, 'an admin can stop a viewer\'s stream');
+    assert.equal(service.getSession(a2.id), undefined);
+    assert.equal((await stop(admin, 'does-not-exist')).status, 404);
+});
+
+test('privacy: provider traffic stays on the server (proxy env inherited, curl http(s)-only, no direct poster loads)', { timeout: 60_000 }, () => {
+    // Every child process the app starts must inherit http_proxy/https_proxy, so none may pass its own env.
+    for (const file of ['routes/probe.js', 'routes/remux.js', 'routes/proxy.js', 'routes/transcode.js', 'routes/subtitle.js', 'services/transcodeSession.js']) {
+        const src = fs.readFileSync(path.join(root, 'server', file), 'utf8');
+        const spawns = [...src.matchAll(/spawn\(([^;]*)\);/g)].map(match => match[1]);
+        assert.ok(spawns.length > 0, file);
+        for (const call of spawns) assert.doesNotMatch(call, /\benv\b/, `${file} must not override the child's environment`);
+    }
+    // The image proxy's curl may not follow a redirect into another protocol.
+    const proxy = fs.readFileSync(path.join(root, 'server/routes/proxy.js'), 'utf8');
+    assert.match(proxy, /'--proto', '=http,https', '--proto-redir', '=http,https'/);
+    // The Watch page's recommended posters go through the server like every other provider image.
+    const watch = fs.readFileSync(path.join(root, 'public/js/pages/WatchPage.js'), 'utf8');
+    assert.doesNotMatch(watch, /<img src="\$\{movie\.stream_icon \|\| movie\.cover/);
+    assert.match(watch, /proxiedImage\(movie\.stream_icon \|\| movie\.cover\)/);
+});

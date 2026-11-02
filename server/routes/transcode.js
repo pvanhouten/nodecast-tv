@@ -206,8 +206,11 @@ router.delete('/:sessionId', async (req, res) => {
     }
 
     try {
-        if (!transcodeSession.getSession(sessionId, req.user.id)) return res.status(404).json({ error: 'Session not found' });
-        await transcodeSession.removeSession(sessionId, req.user.id);
+        // canAccessSession already allowed this caller; admins (Active Streams "Stop") may end anyone's session,
+        // so the owner filter only applies to everyone else.
+        const ownerFilter = req.user.role === 'admin' ? null : req.user.id;
+        if (!transcodeSession.getSession(sessionId, ownerFilter)) return res.status(404).json({ error: 'Session not found' });
+        await transcodeSession.removeSession(sessionId, ownerFilter);
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Failed to remove session', details: err.message });
