@@ -281,3 +281,15 @@ test('an account with no local password cannot sign in with a password and gets 
     const admin = await fixture.request('/api/auth/login', post({ username: 'Admin', password: 'password123' }));
     assert.equal(admin.status, 200, 'normal accounts are unaffected');
 });
+
+test('every ffmpeg protocol whitelist allows httpproxy, which ffmpeg needs when http_proxy/https_proxy is set', { timeout: 60_000 }, () => {
+    const { FFMPEG_PROTOCOL_WHITELIST } = require('../server/services/urlSecurity');
+    assert.ok(FFMPEG_PROTOCOL_WHITELIST.split(',').includes('httpproxy'));
+    for (const file of ['routes/remux.js', 'routes/subtitle.js']) {
+        const src = fs.readFileSync(path.join(root, 'server', file), 'utf8');
+        const lists = [...src.matchAll(/FFMPEG_PROTOCOL_WHITELIST\s*=\s*'([^']+)'|'-protocol_whitelist',\s*'([^']+)'/g)]
+            .map(m => (m[1] || m[2]).split(','));
+        assert.ok(lists.length > 0, file);
+        for (const list of lists) assert.ok(list.includes('httpproxy'), file);
+    }
+});

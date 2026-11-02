@@ -33,7 +33,7 @@ const ALLOWED_URL_SCHEMES = new Set(['http:', 'https:']);
  * - crypto is needed for AES-encrypted HLS segments. Nested file access
  *   remains blocked, and top-level crypto URLs are rejected by the validator.
  */
-const FFMPEG_PROTOCOL_WHITELIST = 'http,https,tls,tcp,hls,crypto';
+const FFMPEG_PROTOCOL_WHITELIST = 'http,https,httpproxy,tls,tcp,hls,crypto'; // httpproxy: needed when http_proxy/https_proxy is set
 
 /**
  * Validate a user-supplied stream URL.

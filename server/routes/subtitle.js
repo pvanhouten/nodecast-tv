@@ -44,7 +44,7 @@ router.get('/', (req, res) => {
         '-loglevel', 'warning',
         // Restrict ffmpeg to safe network protocols only, as defense in depth
         // against protocol handler abuse or redirects into local file reads.
-        '-protocol_whitelist', 'http,https,tcp,tls,crypto',
+        '-protocol_whitelist', 'http,https,httpproxy,tcp,tls,crypto',
         '-user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         '-probesize', '5000000',
         '-analyzeduration', '5000000',

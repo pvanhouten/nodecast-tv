@@ -2,7 +2,8 @@
 
 const ALLOWED_MEDIA_PROTOCOLS = new Set(['http:', 'https:']);
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
-const FFMPEG_PROTOCOL_WHITELIST = 'http,https,tcp,tls,crypto,hls';
+// httpproxy is the hop ffmpeg opens itself when http_proxy/https_proxy is set (VPN pool); without it every proxied input fails.
+const FFMPEG_PROTOCOL_WHITELIST = 'http,https,httpproxy,tcp,tls,crypto,hls';
 
 function validationError(message) {
     const error = new Error(message);
