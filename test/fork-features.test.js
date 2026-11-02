@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
+const net = require('node:net');
 const { spawn } = require('node:child_process');
 
 const root = path.join(__dirname, '..');
@@ -160,11 +161,24 @@ test('probe sends HE-AAC to transcode but lets plain AAC-LC be remuxed', { timeo
 // ---------------------------------------------------------------------------------------------
 
 test('outbound proxy sends fetch() through http_proxy when set and stays direct otherwise', { timeout: 60_000 }, async t => {
+    // undici tunnels every proxied request (even plain HTTP) with CONNECT, so the stand-in proxy must speak it.
     const seenBy = { proxy: [], target: [] };
-    const proxy = http.createServer((req, res) => { seenBy.proxy.push(`${req.method} ${req.url}`); res.end('via-proxy'); });
-    const target = http.createServer((req, res) => { seenBy.target.push(`${req.method} ${req.url}`); res.end('direct'); });
+    const target = http.createServer((req, res) => { seenBy.target.push(`${req.method} ${req.url}`); res.end('reached-target'); });
+    const proxy = http.createServer((req, res) => { res.statusCode = 405; res.end(); });
+    proxy.on('connect', (req, socket, head) => {
+        seenBy.proxy.push(`CONNECT ${req.url}`);
+        const [host, port] = req.url.split(':');
+        const upstream = net.connect(Number(port), host, () => {
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            upstream.write(head);
+            upstream.pipe(socket);
+            socket.pipe(upstream);
+        });
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+    });
     const [proxyPort, targetPort] = [await listen(proxy), await listen(target)];
-    t.after(() => { proxy.close(); target.close(); });
+    t.after(() => { proxy.closeAllConnections(); proxy.close(); target.closeAllConnections(); target.close(); });
 
     const run = env => new Promise((resolve, reject) => {
         const clean = { ...process.env };
@@ -182,17 +196,17 @@ test('outbound proxy sends fetch() through http_proxy when set and stays direct 
     });
 
     const direct = await run({});
-    assert.match(direct, /BODY:direct/);
+    assert.match(direct, /BODY:reached-target/);
     assert.doesNotMatch(direct, /\[Proxy\]/);
-    assert.equal(seenBy.proxy.length, 0);
+    assert.deepEqual(seenBy.proxy, [], 'no proxy variables means no proxy');
     assert.deepEqual(seenBy.target, ['GET /probe']);
 
     seenBy.target.length = 0;
     const proxied = await run({ HTTP_PROXY: `http://127.0.0.1:${proxyPort}` });
     assert.match(proxied, /\[Proxy\] Outbound fetch\(\) routed through/);
-    assert.match(proxied, /BODY:via-proxy/);
-    assert.deepEqual(seenBy.proxy, [`GET http://127.0.0.1:${targetPort}/probe`]);
-    assert.equal(seenBy.target.length, 0, 'the request must not reach the target directly');
+    assert.match(proxied, /BODY:reached-target/);
+    assert.deepEqual(seenBy.proxy, [`CONNECT 127.0.0.1:${targetPort}`], 'the request must go through the proxy');
+    assert.deepEqual(seenBy.target, ['GET /probe'], 'and still reach the target, through the tunnel');
 });
 
 // ---------------------------------------------------------------------------------------------
