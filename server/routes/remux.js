@@ -161,17 +161,13 @@ router.get('/', async (req, res) => {
     // Pipe stdout to response
     ffmpeg.stdout.pipe(res);
 
-    // This is a single long-lived request (not polled like the proxy
-    // passthrough), so heartbeat it periodically for the dashboard rather
-    // than touching once and going stale after ACTIVE_WINDOW_MS.
-    const touchActivity = () => activityTracker.touch({
+    // Single long-lived request: heartbeat it for the Active Streams dashboard until the response closes.
+    activityTracker.heartbeat(res, {
         userId: req.user?.id,
         username: req.user?.username,
         url,
         type: 'Remux'
     });
-    touchActivity();
-    const activityInterval = setInterval(touchActivity, 10000);
 
     // Log stderr (useful for debugging)
     ffmpeg.stderr.on('data', (data) => {
@@ -185,7 +181,6 @@ router.get('/', async (req, res) => {
     // Cleanup on client disconnect
     res.on('close', () => {
         console.log('[Remux] Client disconnected, killing FFmpeg process');
-        clearInterval(activityInterval);
         ffmpeg.kill('SIGKILL');
     });
 
