@@ -142,7 +142,7 @@ class VideoPlayer {
             // Caption/Subtitle settings
             enableCEA708Captions: true,    // Enable CEA-708 closed captions
             enableWebVTT: true,            // Enable WebVTT subtitles
-            renderTextTracksNatively: true // Use native browser rendering for text tracks
+            renderTextTracksNatively: false // CaptionTracks owns removable browser tracks
         };
     }
 
@@ -216,6 +216,12 @@ class VideoPlayer {
         btnPlay?.addEventListener('click', (e) => {
             e.stopPropagation();
             togglePlay();
+        });
+
+        // Stop button (ends playback and the server-side transcode session)
+        document.getElementById('btn-stop')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.stop();
         });
 
         // Center play button (large button shown when paused)
@@ -416,25 +422,7 @@ class VideoPlayer {
      * Toggle fullscreen mode (cross-browser including Safari)
      */
     toggleFullscreen() {
-        const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
-
-        if (isFullscreen) {
-            if (document.exitFullscreen) {
-                document.exitFullscreen();
-            } else if (document.webkitExitFullscreen) {
-                document.webkitExitFullscreen();
-            }
-        } else {
-            const element = this.container;
-            if (element.requestFullscreen) {
-                element.requestFullscreen().catch(err => console.error('Fullscreen error:', err));
-            } else if (element.webkitRequestFullscreen) {
-                element.webkitRequestFullscreen();
-            } else if (this.video.webkitEnterFullscreen) {
-                // iOS Safari: use native video fullscreen
-                this.video.webkitEnterFullscreen();
-            }
-        }
+        return PlayerFullscreen.toggle(this.video, this.container, document);
     }
 
     /**
@@ -531,70 +519,16 @@ class VideoPlayer {
     /**
      * Update available caption tracks in the menu
      */
-    updateCaptionsTracks() {
-        if (!this.captionsList) return;
-
-        // Clear existing list (keep only Off option)
-        this.captionsList.innerHTML = '<button class="captions-option" data-index="-1">Off</button>';
-
-        // Add tracks
-        if (this.video.textTracks && this.video.textTracks.length > 0) {
-            let hasActiveTrack = false;
-
-            for (let i = 0; i < this.video.textTracks.length; i++) {
-                const track = this.video.textTracks[i];
-                const btn = document.createElement('button');
-                btn.className = 'captions-option';
-                btn.textContent = track.label || `Track ${i + 1} (${track.language || 'unknown'})`;
-                btn.dataset.index = i;
-
-                if (track.mode === 'showing') {
-                    btn.classList.add('active');
-                    // Add checkmark
-                    btn.innerHTML += ' <span style="float: right;">✓</span>';
-                    hasActiveTrack = true;
-                }
-
-                btn.onclick = (e) => {
-                    e.stopPropagation();
-                    this.selectCaptionTrack(i);
-                };
-
-                this.captionsList.appendChild(btn);
-            }
-
-            // Handle "Off" button state
-            const offBtn = this.captionsList.querySelector('[data-index="-1"]');
-            if (offBtn) {
-                if (!hasActiveTrack) {
-                    offBtn.classList.add('active');
-                    offBtn.innerHTML += ' <span style="float: right;">✓</span>';
-                }
-                offBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    this.selectCaptionTrack(-1);
-                };
-            }
+    getCaptionTracks() {
+        if (!this.captionTracks) {
+            this.captionTracks = new CaptionTracks(this.video, () => this.updateCaptionsTracks());
         }
+        return this.captionTracks;
     }
 
-    /**
-     * Select a caption track
-     */
-    selectCaptionTrack(index) {
-        if (!this.video.textTracks) return;
-
-        // Turn off all tracks
-        for (let i = 0; i < this.video.textTracks.length; i++) {
-            this.video.textTracks[i].mode = 'hidden'; // or 'disabled'
-        }
-
-        // Turn on selected track
-        if (index >= 0 && index < this.video.textTracks.length) {
-            this.video.textTracks[index].mode = 'showing';
-        }
-
-        this.closeCaptionsMenu();
+    updateCaptionsTracks() {
+        if (!this.captionsList || !this.video) return;
+        this.getCaptionTracks().render(this.captionsList, () => this.closeCaptionsMenu());
     }
 
     init() {
@@ -623,154 +557,6 @@ class VideoPlayer {
                 this.updateQualityBadge();
             }
         });
-
-        // Initialize HLS.js if supported
-        if (Hls.isSupported()) {
-            this.hls = new Hls(this.getHlsConfig());
-            this.lastDiscontinuity = -1; // Track discontinuity changes
-
-            this.hls.on(Hls.Events.ERROR, (event, data) => {
-                console.error('HLS error:', data.type, data.details);
-                if (data.fatal) {
-                    switch (data.type) {
-                        case Hls.ErrorTypes.NETWORK_ERROR:
-                            // Track network retry attempts
-                            this.networkRetryCount = (this.networkRetryCount || 0) + 1;
-                            const now = Date.now();
-                            const timeSinceLastNetworkError = now - (this.lastNetworkErrorTime || 0);
-                            this.lastNetworkErrorTime = now;
-
-                            // Reset retry count if it's been more than 30 seconds since last error
-                            if (timeSinceLastNetworkError > 30000) {
-                                this.networkRetryCount = 1;
-                            }
-
-                            console.log(`Network error (attempt ${this.networkRetryCount}/3):`, data.details);
-
-                            if (this.networkRetryCount <= 3 && !this.isUsingProxy) {
-                                // Retry with increasing delay (1s, 2s, 3s)
-                                const retryDelay = this.networkRetryCount * 1000;
-                                console.log(`[HLS] Retrying in ${retryDelay}ms...`);
-                                setTimeout(() => {
-                                    if (this.hls) {
-                                        this.hls.startLoad();
-                                    }
-                                }, retryDelay);
-                            } else if (!this.isUsingProxy) {
-                                // After 3 retries, try proxy
-                                console.log('[HLS] Max retries reached, switching to proxy...');
-                                this.networkRetryCount = 0;
-                                this.isUsingProxy = true;
-                                const proxiedUrl = this.getProxiedUrl(this.currentUrl);
-                                this.hls.loadSource(proxiedUrl);
-                                this.hls.startLoad();
-                            } else {
-                                // Already using proxy, just retry
-                                console.log('[HLS] Network error on proxy, retrying...');
-                                this.hls.startLoad();
-                            }
-                            break;
-                        case Hls.ErrorTypes.MEDIA_ERROR:
-                            console.log('Media error, attempting recovery...');
-                            this.hls.recoverMediaError();
-                            break;
-                        default:
-                            this.stop();
-                            break;
-                    }
-                } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                    // Non-fatal media error - try to recover with cooldown to prevent loops
-                    const now = Date.now();
-                    const timeSinceLastRecovery = now - (this.lastRecoveryAttempt || 0);
-
-                    // Track consecutive media errors for escalated recovery
-                    if (timeSinceLastRecovery < 5000) {
-                        this.mediaErrorCount = (this.mediaErrorCount || 0) + 1;
-                    } else {
-                        this.mediaErrorCount = 1;
-                    }
-
-                    // Only attempt recovery if more than 2 seconds since last attempt
-                    if (timeSinceLastRecovery > 2000) {
-                        console.log(`Non-fatal media error (${this.mediaErrorCount}x):`, data.details, '- attempting recovery');
-                        this.lastRecoveryAttempt = now;
-
-                        // If repeated errors, try swapAudioCodec which can fix audio glitches
-                        if (this.mediaErrorCount >= 3) {
-                            console.log('[HLS] Multiple errors detected, trying swapAudioCodec...');
-                            this.hls.swapAudioCodec();
-                            this.mediaErrorCount = 0;
-                        }
-
-                        this.hls.recoverMediaError();
-
-                        // If fragParsingError, also seek forward slightly to skip corrupted segment
-                        if (data.details === 'fragParsingError' && !this.video.paused && this.video.currentTime > 0) {
-                            console.log('[HLS] Seeking past corrupted segment...');
-                            setTimeout(() => {
-                                if (this.video && !this.video.paused) {
-                                    this.video.currentTime += 1;
-                                }
-                            }, 200);
-                        }
-                    } else {
-                        // Too many errors in quick succession - log but don't spam recovery
-                        console.log('Non-fatal media error (cooldown):', data.details);
-                    }
-                } else if (data.details === 'bufferAppendError') {
-                    // Buffer errors during ad transitions - try recovery
-                    console.log('Buffer append error, recovering...');
-                    this.hls.recoverMediaError();
-                }
-            });
-
-            // Detect audio track switches (can cause audio glitches on some streams)
-            this.hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (event, data) => {
-                console.log('Audio track switched:', data);
-            });
-
-            // Detect buffer stalls which may indicate codec issues
-            this.hls.on(Hls.Events.BUFFER_STALLED_ERROR, () => {
-                console.log('Buffer stalled, attempting recovery...');
-                this.hls.recoverMediaError();
-            });
-
-            // Detect discontinuity changes (ad transitions) and help decoder reset
-            this.hls.on(Hls.Events.FRAG_CHANGED, (event, data) => {
-                const frag = data.frag;
-                // Debug: log every fragment change
-                console.log(`[HLS] FRAG_CHANGED: sn=${frag?.sn}, cc=${frag?.cc}, level=${frag?.level}`);
-
-                if (frag && frag.sn !== 'initSegment') {
-                    // Check if we crossed a discontinuity boundary using CC (Continuity Counter)
-                    if (frag.cc !== undefined && frag.cc !== this.lastDiscontinuity) {
-                        console.log(`[HLS] Discontinuity detected: CC ${this.lastDiscontinuity} -> ${frag.cc}`);
-                        this.lastDiscontinuity = frag.cc;
-
-                        // Small nudge to help decoder sync (only if playing)
-                        if (!this.video.paused && this.video.currentTime > 0) {
-                            const nudgeAmount = 0.01;
-                            this.video.currentTime += nudgeAmount;
-                        }
-                    }
-                }
-            });
-
-            // Listen for subtitle track updates
-            this.hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (event, data) => {
-                console.log('Subtitle tracks updated:', data.subtitleTracks);
-                // Wait a moment for native text tracks to populate
-                setTimeout(() => this.updateCaptionsTracks(), 100);
-            });
-
-            this.hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, (event, data) => {
-                console.log('Subtitle track switched:', data);
-            });
-
-            this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                this.video.play().catch(e => console.log('Autoplay prevented:', e));
-            });
-        }
 
         // Keyboard controls
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
@@ -813,52 +599,51 @@ class VideoPlayer {
      * Start a HLS transcode session
      */
     async startTranscodeSession(url, options = {}) {
+        const generation = this.playbackGeneration;
+        this.playbackSessions ||= new PlaybackSessions(true);
+        const sessionOptions = options;
         try {
-            console.log('[Player] Starting HLS transcode session...', options);
-            const res = await fetch('/api/transcode/session', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, ...options })
-            });
-            if (!res.ok) throw new Error('Failed to start session');
-            const session = await res.json();
+            const session = await this.playbackSessions.create(url, sessionOptions);
+            if (generation !== this.playbackGeneration) return null;
             this.currentSessionId = session.sessionId;
+
             return session.playlistUrl;
-        } catch (err) {
-            console.error('[Player] Session start failed:', err);
-            // Fallback to direct transcode if session fails
-            return `/api/transcode?url=${encodeURIComponent(url)}`;
+        } catch (error) {
+            if (error.name !== 'AbortError' && generation === this.playbackGeneration) {
+                this.stopTranscodeSession();
+                console.error('Unable to start playback:', error.message);
+                this.showError('Unable to start transcoding. Please try again.');
+            }
+            return null;
         }
     }
 
-    /**
-     * Stop and cleanup current transcode session
-     */
-    async stopTranscodeSession() {
-        if (this.currentSessionId) {
-            console.log('[Player] Stopping transcode session:', this.currentSessionId);
-            try {
-                // Fire and forget cleanup
-                fetch(`/api/transcode/${this.currentSessionId}`, { method: 'DELETE' });
-            } catch (err) {
-                console.error('Failed to stop session:', err);
-            }
-            this.currentSessionId = null;
-        }
+    stopTranscodeSession() {
+        this.playbackSessions?.stop();
+        this.currentSessionId = null;
+
     }
 
     /**
      * Play a channel
      */
     async play(channel, streamUrl) {
-        this.currentChannel = channel;
-
         try {
             // Stop any WatchPage playback (movies/series) before starting Live TV
             window.app?.pages?.watch?.stop?.();
 
             // Stop current playback
             this.stop();
+            const playbackGeneration = this.playbackGeneration;
+            if (channel?.zapBeforeStreaming) {
+                const controller = this.zapController = new AbortController();
+                await this.zapBeforeStreaming(channel, streamUrl, controller.signal);
+                if (this.playbackGeneration !== playbackGeneration) return;
+                this.zapController = null;
+            }
+            if (this.playbackGeneration !== playbackGeneration) return;
+            this.currentChannel = channel;
+            let probeInfo = null;
             this.updateTranscodeStatus('hidden');
 
             // Hide "select a channel" overlay
@@ -875,35 +660,16 @@ class VideoPlayer {
             if (this.settings.autoTranscode) {
                 console.log('[Player] Auto Transcode enabled. Probing stream...');
                 try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
-                    const info = await probeRes.json();
+                    const info = await (this.playbackProbe ||= new PlaybackProbe(fetch)).read(streamUrl, { program: channel?.program });
+                    if (this.playbackGeneration !== playbackGeneration) return;
+                    probeInfo = info;
                     console.log(`[Player] Probe result: video=${info.video}, audio=${info.audio}, ${info.width}x${info.height}, compatible=${info.compatible}`);
 
                     // Store probe result for quality badge display
                     this.currentStreamInfo = info;
                     this.updateQualityBadge();
 
-                    // Handle subtitles from probe result
-                    // Clear existing remote tracks (from previous streams)
-                    const oldTracks = this.video.querySelectorAll('track');
-                    oldTracks.forEach(t => t.remove());
-
-                    if (info.subtitles && info.subtitles.length > 0) {
-                        console.log(`[Player] Found ${info.subtitles.length} subtitle tracks`);
-                        info.subtitles.forEach(sub => {
-                            const track = document.createElement('track');
-                            track.kind = 'subtitles';
-                            track.label = sub.title;
-                            track.srclang = sub.language;
-                            track.src = `/api/subtitle?url=${encodeURIComponent(streamUrl)}&index=${sub.index}`;
-                            this.video.appendChild(track);
-                        });
-
-                        // Force update of captions menu if it's open
-                        if (this.captionsMenuOpen) {
-                            this.updateCaptionsTracks();
-                        }
-                    }
+                    this.getCaptionTracks().setProbe(info, streamUrl);
 
                     if (info.needsTranscode || this.settings.upscaleEnabled) {
                         // Incompatible audio (AC3/EAC3/DTS) or Upscaling enabled - use transcode session
@@ -916,12 +682,16 @@ class VideoPlayer {
                         const statusMode = this.settings.upscaleEnabled ? 'upscaling' : 'transcoding';
 
                         this.updateTranscodeStatus(statusMode, statusText);
+                        if (this.playbackGeneration !== playbackGeneration) return;
                         const playlistUrl = await this.startTranscodeSession(streamUrl, {
+                            program: channel?.program || null,
                             videoMode,
                             videoCodec: info.video,
                             audioCodec: info.audio,
-                            audioChannels: info.audioChannels
+                            audioChannels: info.audioChannels,
+                            videoHeight: info.height
                         });
+                        if (!playlistUrl || this.playbackGeneration !== playbackGeneration) return;
                         this.currentUrl = playlistUrl; // Update currentUrl for HLS reload
 
                         this.playHls(playlistUrl);
@@ -935,8 +705,10 @@ class VideoPlayer {
                         // Raw .ts container - use remux
                         console.log('[Player] Auto: Using remux (.ts container)');
                         this.updateTranscodeStatus('remuxing', 'Remux (Auto)');
-                        const remuxUrl = `/api/remux?url=${encodeURIComponent(streamUrl)}`;
+                        const remuxUrl = this.getRemuxUrl(streamUrl, info.audioCodecs || [info.audio], channel?.program);
                         this.currentUrl = remuxUrl;
+                        this.getCaptionTracks().setProbe(probeInfo, streamUrl);
+                        this.getCaptionTracks().useNative();
                         this.video.src = remuxUrl;
                         this.video.play().catch(e => {
                             if (e.name !== 'AbortError') console.log('[Player] Autoplay prevented:', e);
@@ -950,53 +722,26 @@ class VideoPlayer {
                     // Compatible - fall through to normal HLS.js path
                     console.log('[Player] Auto: Using HLS.js (compatible)');
                 } catch (err) {
+                    if (err.name === 'AbortError') return;
                     console.warn('[Player] Probe failed, using normal playback:', err.message);
                     // Continue with normal playback on probe failure
                 }
             }
 
+            if (this.playbackGeneration !== playbackGeneration) return;
             // CHECK: Force Video Transcode (Full) or Upscaling
             if (this.settings.forceVideoTranscode || this.settings.upscaleEnabled) {
                 const statusText = this.settings.upscaleEnabled ? 'Upscaling' : 'Transcoding (Video)';
                 const statusMode = this.settings.upscaleEnabled ? 'upscaling' : 'transcoding';
                 console.log(`[Player] ${statusText} enabled. Starting session (encode)...`);
                 this.updateTranscodeStatus(statusMode, statusText);
-                const playlistUrl = await this.startTranscodeSession(streamUrl, { videoMode: 'encode' });
+                if (this.playbackGeneration !== playbackGeneration) return;
+                const playlistUrl = await this.startTranscodeSession(streamUrl, { program: channel?.program || null, videoMode: 'encode' });
+                if (!playlistUrl || this.playbackGeneration !== playbackGeneration) return;
                 this.currentUrl = playlistUrl;
 
-                // Load HLS
-                this.updateNowPlaying(channel, 'Transcoding (Video)');
-                // ... (rest is same logic flow, simplified by just falling through to playHls call if I refactored)
-                // But for minimize drift, I'll copy the block logic for HLS playback init
-                // Actually, I can just fall through if I set looksLikeHls = true?
-                // No, play logic is sequential.
-                if (Hls.isSupported()) {
-                    // Start HLS
-                    // ... this repeats code. I should probably just set currentUrl and let HLS block handle?
-                    // But HLS block is lower down.
-                    // I will just execute the HLS init here as before.
-
-                    // Actually, easiest way is to re-assign streamUrl and goto start? No.
-                    // Copy existing forceTranscode block logic
-                    if (this.hls) {
-                        this.hls.destroy();
-                    }
-                    this.hls = new Hls();
-                    this.hls.loadSource(playlistUrl);
-                    this.hls.attachMedia(this.video);
-                    this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                        this.video.play().catch(console.error);
-                    });
-                    // Handle errors
-                    this.hls.on(Hls.Events.ERROR, (event, data) => {
-                        if (data.fatal) {
-                            console.log('[Player] HLS fatal error');
-                            this.hls.destroy();
-                        }
-                    });
-
-                    return; // Exit
-                }
+                this.playHls(playlistUrl);
+                return;
             }
 
             // CHECK: Force Audio Transcode (Copy Video) - legacy forceTranscode setting
@@ -1007,12 +752,14 @@ class VideoPlayer {
                 // Probe to get video codec for HEVC tag handling
                 let videoCodec = 'unknown';
                 try {
-                    const probeRes = await fetch(`/api/probe?url=${encodeURIComponent(streamUrl)}`);
-                    const info = await probeRes.json();
-                    videoCodec = info.video;
-                } catch (e) { console.warn('Probe failed for force audio, assuming h264'); }
+                    const info = await (this.playbackProbe ||= new PlaybackProbe(fetch)).read(streamUrl, { program: channel?.program });
+                    if (this.playbackGeneration !== playbackGeneration) return;
+                videoCodec = info.video;
+                } catch (e) { if (e.name === 'AbortError') return; console.warn('Probe failed for force audio, assuming h264'); }
 
-                const playlistUrl = await this.startTranscodeSession(streamUrl, { videoMode: 'copy', videoCodec });
+                if (this.playbackGeneration !== playbackGeneration) return;
+                const playlistUrl = await this.startTranscodeSession(streamUrl, { program: channel?.program || null, videoMode: 'copy', videoCodec });
+                if (!playlistUrl || this.playbackGeneration !== playbackGeneration) return;
                 this.currentUrl = playlistUrl;
 
                 console.log('[Player] Playing transcoded HLS stream:', playlistUrl);
@@ -1050,11 +797,23 @@ class VideoPlayer {
 
             // Force Remux: Route through FFmpeg for container conversion
             // Applies to: 1) .ts streams when detected, or 2) ALL non-HLS streams when enabled
-            if (this.settings.forceRemux && (isRawTs || isExtensionless)) {
+            if ((this.settings.forceRemux || channel?.program != null) && (isRawTs || isExtensionless)) {
                 console.log('[Player] Force Remux enabled. Routing through FFmpeg remux...');
                 console.log('[Player] Stream type:', isRawTs ? 'Raw TS' : 'Extension-less (assumed TS)');
-                this.updateTranscodeStatus('remuxing', 'Remux (Force)');
-                const remuxUrl = this.getRemuxUrl(streamUrl);
+                this.updateTranscodeStatus('remuxing', this.settings.forceRemux ? 'Remux (Force)' : 'Remux (Program)');
+                if (!probeInfo) {
+                    try {
+                        probeInfo = await (this.playbackProbe ||= new PlaybackProbe(fetch)).read(streamUrl, { program: channel?.program });
+                    } catch (error) {
+                        if (error.name === 'AbortError') return;
+                        console.warn('[Player] Remux probe failed:', error.message);
+                    }
+                }
+                if (this.playbackGeneration !== playbackGeneration) return;
+                const remuxUrl = this.getRemuxUrl(streamUrl, probeInfo?.audioCodecs || (probeInfo?.audio ? [probeInfo.audio] : []), channel?.program);
+                this.currentUrl = remuxUrl;
+                this.getCaptionTracks().setProbe(probeInfo, streamUrl);
+                this.getCaptionTracks().useNative();
                 this.video.src = remuxUrl;
                 this.video.play().catch(e => {
                     if (e.name !== 'AbortError') console.log('[Player] Autoplay prevented:', e);
@@ -1084,69 +843,12 @@ class VideoPlayer {
             if (looksLikeHls && Hls.isSupported()) {
                 this.updateTranscodeStatus('direct', 'Direct HLS');
 
-                // Use playHls helper logic here (or extract it)
-                // For now, let's just use existing logic but wrapped/modularized if possible?
-                // The HLS init logic is quite complex with error handling
-                // I'll inline the Hls init here as per original but mindful of proxy vs local
-
-                this.hls = new Hls(this.getHlsConfig());
-                this.hls.loadSource(finalUrl);
-                this.hls.attachMedia(this.video);
-
-                this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    this.video.play().catch(e => {
-                        if (e.name !== 'AbortError') console.log('Autoplay prevented:', e);
-                    });
-                });
-
-                // Re-attach error handler for the new Hls instance
-                this.hls.on(Hls.Events.ERROR, (event, data) => {
-                    if (data.fatal) {
-                        const isCorsLikely = data.type === Hls.ErrorTypes.NETWORK_ERROR ||
-                            (data.type === Hls.ErrorTypes.MEDIA_ERROR && data.details === 'fragParsingError');
-
-                        // Don't proxy if it's already a local API URL
-                        const isLocalApi = this.currentUrl.startsWith('/api/');
-
-                        if (isCorsLikely && !this.isUsingProxy && !isLocalApi) {
-                            console.log('CORS/Network error detected, retrying via proxy...', data.details);
-                            this.isUsingProxy = true;
-                            this.hls.loadSource(this.getProxiedUrl(this.currentUrl));
-                            this.hls.startLoad();
-                        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                            // Fatal media error - try recovery with cooldown
-                            const now = Date.now();
-                            if (now - (this.lastRecoveryAttempt || 0) > 2000) {
-                                console.log('Fatal media error, attempting recovery...');
-                                this.lastRecoveryAttempt = now;
-                                this.hls.recoverMediaError();
-                            }
-                        } else {
-                            console.error('Fatal HLS error:', data);
-                        }
-                    } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                        // Non-fatal media error - already handled in init(), skip duplicate handling
-                    }
-                });
-
-                // Detect discontinuity changes (ad transitions) for logging only
-                this.lastDiscontinuity = -1;
-                this.hls.on(Hls.Events.FRAG_CHANGED, (event, data) => {
-                    const frag = data.frag;
-                    if (frag && frag.sn !== 'initSegment') {
-                        // Log discontinuity changes for debugging
-                        if (frag.cc !== undefined && frag.cc !== this.lastDiscontinuity) {
-                            console.log(`[HLS] Discontinuity detected: CC ${this.lastDiscontinuity} -> ${frag.cc}`);
-                            this.lastDiscontinuity = frag.cc;
-                            // Note: maxAudioFramesDrift: 4 handles audio sync naturally
-                            // No manual seeking needed - it can cause more issues than it solves
-                        }
-                    }
-                });
+                this.playHls(finalUrl);
             } else if (this.video.canPlayType('application/vnd.apple.mpegurl') === 'probably' ||
                 this.video.canPlayType('application/vnd.apple.mpegurl') === 'maybe') {
                 // Priority 2: Native HLS support (Safari on iOS/macOS where HLS.js may not work)
                 this.updateTranscodeStatus('direct', 'Direct Native');
+                this.getCaptionTracks().useNative({ allowProbe: !looksLikeHls });
                 this.video.src = finalUrl;
                 this.video.play().catch(e => {
                     if (e.name === 'AbortError') return; // Ignore interruption by new load
@@ -1162,6 +864,7 @@ class VideoPlayer {
             } else {
                 // Priority 3: Try direct playback for non-HLS streams
                 this.updateTranscodeStatus('direct', 'Direct Play');
+                this.getCaptionTracks().useNative();
                 this.video.src = finalUrl;
                 this.video.play().catch(e => {
                     if (e.name !== 'AbortError') console.log('Autoplay prevented:', e);
@@ -1181,6 +884,7 @@ class VideoPlayer {
             window.dispatchEvent(new CustomEvent('channelChanged', { detail: channel }));
 
         } catch (err) {
+            if (err.name === 'AbortError') return;
             console.error('Error playing channel:', err);
             this.showError('Failed to play channel');
         }
@@ -1195,21 +899,41 @@ class VideoPlayer {
         }
 
         this.hls = new Hls(this.getHlsConfig());
+        const hls = this.hls, generation = this.playbackGeneration;
+        this.audioRecovery?.dispose();
+        this.audioRecovery = new HlsAudioRecovery(hls, this.video, Hls.Events,
+            () => this.hls === hls && this.playbackGeneration === generation,
+            { beforeRecovery: () => this.getCaptionTracks().prepareMediaRecovery() });
+        this.getCaptionTracks().bindHls(hls, Hls.Events);
         this.hls.loadSource(url);
         this.hls.attachMedia(this.video);
 
         this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (this.hls !== hls || this.playbackGeneration !== generation) return;
             this.video.play().catch(e => {
                 if (e.name !== 'AbortError') console.log('Autoplay prevented:', e);
             });
         });
 
-        this.hls.on(Hls.Events.ERROR, (event, data) => {
-            if (data.fatal) {
-                // Simple error handling for forced HLS/transcode modes
-                console.error('Fatal HLS error in transcode mode:', data);
-                this.hls.destroy();
+        hls.on(Hls.Events.ERROR, (event, data) => {
+            if (this.hls !== hls || this.playbackGeneration !== generation) return;
+            const mediaError = data.type === Hls.ErrorTypes.MEDIA_ERROR;
+            const needsRecovery = mediaError && (data.fatal || ['bufferAppendError', 'bufferAppendingError', 'fragParsingError'].includes(data.details));
+            if (needsRecovery && this.audioRecovery.requestRecovery('media error')) return;
+            if (!data.fatal) return;
+            const networkError = data.type === Hls.ErrorTypes.NETWORK_ERROR;
+            if (networkError && !this.isUsingProxy && !url.startsWith('/api/')) {
+                this.isUsingProxy = true;
+                hls.loadSource(this.getProxiedUrl(url));
+                hls.startLoad();
+                return;
             }
+            console.error('Fatal HLS error:', data.details);
+            this.audioRecovery.dispose();
+            hls.destroy();
+            this.hls = null;
+            this.stopTranscodeSession();
+            this.showError('Playback failed. Try selecting the channel again.');
         });
     }
 
@@ -1368,8 +1092,9 @@ class VideoPlayer {
      * Get remuxed URL for a stream (container conversion only, no re-encoding)
      * Used for raw .ts streams that browsers can't play directly
      */
-    getRemuxUrl(url) {
-        return `/api/remux?url=${encodeURIComponent(url)}`;
+    getRemuxUrl(url, audioCodecs = [], program = null) {
+        const selection = program == null ? '' : '&program=' + encodeURIComponent(program);
+        return `/api/remux?url=${encodeURIComponent(url)}&audioCodecs=${encodeURIComponent(audioCodecs.join(','))}${selection}`;
     }
 
     /**
@@ -1388,6 +1113,12 @@ class VideoPlayer {
      * Stop playback
      */
     stop() {
+        this.playbackProbe?.cancel();
+        this.zapController?.abort();
+        this.zapController = null;
+        this.playbackGeneration = (this.playbackGeneration || 0) + 1;
+        this.audioRecovery?.dispose();
+        this.audioRecovery = null;
         // Stop any running transcode session first
         this.stopTranscodeSession();
 
@@ -1395,6 +1126,8 @@ class VideoPlayer {
             this.hls.destroy();
             this.hls = null;
         }
+        this.getCaptionTracks().reset();
+        this.closeCaptionsMenu();
         this.video.pause();
         this.video.src = '';
         this.video.load();
@@ -1554,16 +1287,48 @@ class VideoPlayer {
         window.app.channelList.selectChannel({ channelId: channels[nextIdx].id });
     }
 
-    /**
-     * Toggle fullscreen
-     */
-    toggleFullscreen() {
-        if (document.fullscreenElement) {
-            document.exitFullscreen();
-        } else if (this.container) {
-            this.container.requestFullscreen();
+    async zapBeforeStreaming(channel, streamUrl, signal) {
+        if (!channel?.zapBeforeStreaming) return;
+        if (!channel?.streamId || !streamUrl) return;
+
+        const requestedDelay = Number(channel.zapDelay ?? 1500);
+        const delay = Number.isFinite(requestedDelay) ? Math.max(0, Math.min(10000, requestedDelay)) : 1500;
+        signal?.throwIfAborted();
+
+        try {
+            console.log('[ZAP] before streaming:', {
+                channel: channel.name,
+                serviceRef: channel.streamId,
+                delay
+            });
+
+            // The server resolves the receiver from the configured source
+            const res = await fetch('/api/openwebif/zap', {
+                signal,
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sourceId: channel.sourceId,
+                    streamId: channel.streamId
+                })
+            });
+
+            if (!res.ok) {
+                console.warn('[ZAP] backend returned:', res.status);
+            }
+
+            await new Promise((resolve, reject) => {
+                const abort = () => { clearTimeout(timer); reject(Object.assign(new Error('Playback was superseded'), { name: 'AbortError' })); };
+                const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, delay);
+                signal?.addEventListener('abort', abort, { once: true });
+                if (signal?.aborted) abort();
+            });
+        } catch (err) {
+            if (signal?.aborted || err.name === 'AbortError') throw err;
+            console.warn('[ZAP] failed, continuing stream:', err);
         }
     }
+
 }
 
 // Export

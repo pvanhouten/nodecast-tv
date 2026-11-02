@@ -434,6 +434,9 @@ class SeriesPage {
         const seasonNum = seasonMatch ? seasonMatch[1] : '1';
         const episodeNum = episodeEl.querySelector('.episode-number')?.textContent?.replace('E', '') || '1';
 
+        const episode = Object.values(this.currentSeriesInfo?.episodes || {}).flat()
+            .find(item => String(item.id) === String(episodeId));
+
         try {
             // Get stream URL for episode (use 'series' type)
             const result = await API.proxy.xtream.getStreamUrl(sourceId, episodeId, 'series', container);
@@ -457,7 +460,8 @@ class SeriesPage {
                         seriesInfo: this.currentSeriesInfo,
                         currentSeason: seasonNum,
                         currentEpisode: episodeNum,
-                        containerExtension: container
+                        containerExtension: container,
+                        duration: VodDuration.fromContent(episode || {})
                     }, result.url);
                 }
             }
