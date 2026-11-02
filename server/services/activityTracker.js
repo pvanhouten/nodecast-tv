@@ -123,6 +123,8 @@ let cleanupInterval = null;
 function startCleanupInterval() {
     if (cleanupInterval) return;
     cleanupInterval = setInterval(prune, 60 * 1000);
+    // Don't let this housekeeping timer keep the process (or a test runner) alive.
+    cleanupInterval.unref?.();
 }
 
 module.exports = {
