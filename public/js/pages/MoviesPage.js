@@ -356,7 +356,8 @@ class MoviesPage {
                         rating: movie.rating,
                         sourceId: movie.sourceId,
                         categoryId: movie.category_id,
-                        containerExtension: container
+                        containerExtension: container,
+                        duration: VodDuration.fromContent(movie)
                     }, result.url);
                 }
             }

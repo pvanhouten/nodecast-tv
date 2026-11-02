@@ -1,5 +1,13 @@
 const express = require('express');
 const router = express.Router();
+const { validateHttpUrl } = require('../services/urlSecurity');
+router.use((req, res, next) => {
+    if (req.query.url !== undefined) {
+        try { validateHttpUrl(req.query.url); }
+        catch (error) { return res.status(400).json({ error: error.message }); }
+    }
+    next();
+});
 const { sources } = require('../db');
 const { getDb } = require('../db/sqlite'); // Import SQLite
 const xtreamApi = require('../services/xtreamApi');
@@ -11,11 +19,9 @@ const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
-const { requireAuth, requireAdmin } = require('../auth');
 const activityTracker = require('../services/activityTracker');
 
 // All proxy routes require authentication
-router.use(requireAuth);
 
 // Default cache max age in hours
 const DEFAULT_MAX_AGE_HOURS = 24;
@@ -382,7 +388,7 @@ router.get('/epg/:sourceId', async (req, res) => {
 });
 
 // Clear cache (kept for compatibility)
-router.delete('/cache/:sourceId', requireAdmin, (req, res) => {
+router.delete('/cache/:sourceId', (req, res) => {
     const sourceId = req.params.sourceId;
     cache.clearSource(sourceId);
     res.json({ success: true });
@@ -549,7 +555,7 @@ router.get('/epg/:sourceId', async (req, res) => {
  * Clear cache for a source
  * DELETE /api/proxy/cache/:sourceId
  */
-router.delete('/cache/:sourceId', requireAdmin, (req, res) => {
+router.delete('/cache/:sourceId', (req, res) => {
     const sourceId = req.params.sourceId;
     cache.clearSource(sourceId);
     res.json({ success: true });
@@ -559,7 +565,7 @@ router.delete('/cache/:sourceId', requireAdmin, (req, res) => {
  * Clear EPG cache for a source (legacy endpoint, calls clearSource)
  * DELETE /api/proxy/epg/:sourceId/cache
  */
-router.delete('/epg/:sourceId/cache', requireAdmin, (req, res) => {
+router.delete('/epg/:sourceId/cache', (req, res) => {
     const sourceId = req.params.sourceId;
     cache.clear('epg', sourceId, 'data');
     res.json({ success: true });
@@ -649,7 +655,7 @@ async function resolveStreamLabel(url) {
 }
 
 function streamBinaryViaCurl(req, res, url, headers, rangeHeader, defaultContentType = 'application/octet-stream') {
-    const args = ['-sS', '--fail', '--location', '--max-time', '30'];
+    const args = ['-sS', '--fail', '--location', '--proto', '=http,https', '--proto-redir', '=http,https', '--max-redirs', '5', '--max-time', '30'];
     for (const [key, value] of Object.entries(headers)) {
         args.push('-H', `${key}: ${value}`);
     }
@@ -706,141 +712,26 @@ function streamBinaryViaCurl(req, res, url, headers, rangeHeader, defaultContent
     req.on('close', () => curlProcess.kill('SIGKILL'));
 }
 
-router.get('/stream', async (req, res) => {
-    let { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: 'URL required' });
-    }
+const proxyStream = require('../services/proxyStream');
 
-    // Forward some headers to be more "transparent" back to the origin
-    // Pluto TV uses multiple domains for content delivery
-    const plutoDomains = ['pluto.tv', 'pluto.io', 'plutotv.net', 'siloh.pluto.tv', 'service-stitcher'];
-    const isPluto = plutoDomains.some(domain => url.includes(domain));
-
-    const headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        // Using https and matching the origin of the request
-        'Origin': isPluto ? 'https://pluto.tv' : new URL(url).origin,
-        'Referer': isPluto ? 'https://pluto.tv/' : new URL(url).origin + '/'
-    };
-
-    // Forward Range header for video seeking support
-    const rangeHeader = req.get('range');
-    if (rangeHeader) {
-        headers['Range'] = rangeHeader;
-    }
-
-    const isM3u8 = url.split('?')[0].toLowerCase().endsWith('.m3u8');
-    if (!isM3u8) {
+// Stream proxy (upstream's cancellation-aware implementation), wrapped so the
+// admin Active Streams dashboard keeps seeing who is watching what.
+router.get('/stream', async (req, res, next) => {
+    const { url } = req.query;
+    if (typeof url === 'string' && url) {
+        const isM3u8 = url.split('?')[0].toLowerCase().endsWith('.m3u8');
+        // The label is only resolved for manifests: it establishes the dashboard's
+        // "which stream" identity (see activityTracker.js); segment touches just keep it alive.
+        const label = isM3u8 ? await resolveStreamLabel(url) : undefined;
         activityTracker.touch({
-            userId: req.user.id,
-            username: req.user.username,
+            userId: req.user?.id,
+            username: req.user?.username,
             url,
+            label,
             type: 'Live (proxy)'
         });
-        return streamBinaryViaCurl(req, res, url, headers, rangeHeader);
     }
-
-    // Resolve a human-readable channel/movie/series name for the manifest
-    // URL - this is what actually establishes/updates the dashboard's
-    // "which stream" identity (see activityTracker.js), so it only needs
-    // doing here, not on every subsequent segment request.
-    const label = await resolveStreamLabel(url);
-    activityTracker.touch({
-        userId: req.user.id,
-        username: req.user.username,
-        url,
-        label,
-        type: 'Live (proxy)'
-    });
-
-    const maxRetries = 2;
-    let lastError = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            const response = await fetch(url, { headers });
-
-            // Retry on 5xx errors (transient upstream issues)
-            if (response.status >= 500 && attempt < maxRetries) {
-                console.log(`[Proxy] Upstream 5xx error (attempt ${attempt}/${maxRetries}), retrying in 500ms...`);
-                await new Promise(r => setTimeout(r, 500));
-                continue;
-            }
-
-            if (!response.ok) {
-                console.error(`Upstream error for ${url.substring(0, 80)}...: ${response.status} ${response.statusText}`);
-                if (response.status === 403) {
-                    const errorBody = await response.text().catch(() => 'N/A');
-                    console.error(`403 Response body: ${errorBody.substring(0, 200)}`);
-                }
-                return res.status(response.status).send(`Failed to fetch stream: ${response.statusText}`);
-            }
-
-            res.set('Access-Control-Allow-Origin', '*');
-
-            // Manifest only from here on (binary content already returned
-            // early via streamBinaryViaCurl above) - read the whole body to
-            // rewrite embedded URLs, then send.
-            const buffer = Buffer.from(await response.arrayBuffer());
-            const finalUrl = response.url || url;
-            console.log(`[Proxy] Processing HLS manifest from: ${finalUrl.substring(0, 80)}...`);
-            res.set('Content-Type', 'application/vnd.apple.mpegurl');
-
-            let manifest = buffer.toString('utf-8');
-
-            const finalUrlObj = new URL(finalUrl);
-            const baseUrl = finalUrlObj.origin + finalUrlObj.pathname.substring(0, finalUrlObj.pathname.lastIndexOf('/') + 1);
-
-            manifest = manifest.split('\n').map(line => {
-                const trimmed = line.trim();
-                if (trimmed === '' || trimmed.startsWith('#')) {
-                    // Handle both URI="..." and URI='...' formats
-                    if (trimmed.includes('URI=')) {
-                        // Replace both double and single quoted URIs
-                        return line.replace(/URI=["']([^"']+)["']/g, (match, p1) => {
-                            try {
-                                const absoluteUrl = new URL(p1, baseUrl).href;
-                                return `URI="${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}"`;
-                            } catch (e) {
-                                return match;
-                            }
-                        });
-                    }
-                    return line;
-                }
-
-                // Stream URL handling
-                try {
-                    let absoluteUrl;
-                    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-                        absoluteUrl = trimmed;
-                    } else {
-                        absoluteUrl = new URL(trimmed, baseUrl).href;
-                    }
-                    return `${req.protocol}://${req.get('host')}${req.baseUrl}/stream?url=${encodeURIComponent(absoluteUrl)}`;
-                } catch (e) { return line; }
-            }).join('\n');
-
-            return res.send(manifest);
-
-        } catch (err) {
-            lastError = err;
-            console.error(`Stream proxy error (attempt ${attempt}/${maxRetries}):`, err.message);
-            if (attempt < maxRetries) {
-                console.log('[Proxy] Retrying after error...');
-                await new Promise(r => setTimeout(r, 500));
-                continue;
-            }
-        }
-    }
-
-    // All retries failed
-    if (!res.headersSent) {
-        res.status(500).json({ error: lastError?.message || 'Stream proxy failed after retries' });
-    }
+    return proxyStream(req, res, next);
 });
 
 /**

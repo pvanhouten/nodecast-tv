@@ -1,10 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { favorites } = require('../db/sqlite');
-const { requireAuth } = require('../auth');
 
 // All favorites routes require authentication
-router.use(requireAuth);
 
 // Get all favorites for current user
 router.get('/', async (req, res) => {

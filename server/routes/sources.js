@@ -1,17 +1,19 @@
 const express = require('express');
 const router = express.Router();
+const zapDelayValue = value => {
+    const delay = Number(value ?? 1500);
+    return Number.isFinite(delay) ? Math.max(0, Math.min(10000, Math.trunc(delay))) : 1500;
+};
 const { sources } = require('../db');
 const { getDb } = require('../db/sqlite');
 const xtreamApi = require('../services/xtreamApi');
 const syncService = require('../services/syncService');
 const m3uParser = require('../services/m3uParser');
-const { requireAuth, requireAdmin } = require('../auth');
 
 // All source routes require authentication. Only the sanitized list view
 // (GET /) is viewer-readable (used by browsing pages to enumerate sources);
 // every other route here exposes plaintext provider credentials or lets
 // you mutate/sync IPTV sources, so those require admin.
-router.use(requireAuth);
 
 // Get all sources
 router.get('/', async (req, res) => {
@@ -30,7 +32,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get sync status for all sources
-router.get('/status', requireAdmin, async (req, res) => {
+router.get('/status', async (req, res) => {
     try {
         const { getDb } = require('../db/sqlite');
         const db = getDb();
@@ -43,7 +45,7 @@ router.get('/status', requireAdmin, async (req, res) => {
 });
 
 // Get sources by type
-router.get('/type/:type', requireAdmin, async (req, res) => {
+router.get('/type/:type', async (req, res) => {
     try {
         const typeSources = await sources.getByType(req.params.type);
         res.json(typeSources);
@@ -54,7 +56,7 @@ router.get('/type/:type', requireAdmin, async (req, res) => {
 });
 
 // Get single source (includes plaintext password for the admin edit form)
-router.get('/:id', requireAdmin, async (req, res) => {
+router.get('/:id', async (req, res) => {
     try {
         const source = await sources.getById(req.params.id);
         if (!source) {
@@ -68,9 +70,9 @@ router.get('/:id', requireAdmin, async (req, res) => {
 });
 
 // Create source
-router.post('/', requireAdmin, async (req, res) => {
+router.post('/', async (req, res) => {
     try {
-        const { type, name, url, username, password } = req.body;
+        const { type, name, url, username, password, zapBeforeStreaming, zapDelay } = req.body;
 
         if (!type || !name || !url) {
             return res.status(400).json({ error: 'Type, name, and URL are required' });
@@ -80,7 +82,7 @@ router.post('/', requireAdmin, async (req, res) => {
             return res.status(400).json({ error: 'Invalid source type' });
         }
 
-        const source = await sources.create({ type, name, url, username, password });
+        const source = await sources.create({ type, name, url, username, password, zapBeforeStreaming: zapBeforeStreaming === true, zapDelay: zapDelayValue(zapDelay) });
         // Trigger Sync
         syncService.syncSource(source.id).catch(console.error);
         res.status(201).json(source);
@@ -91,20 +93,25 @@ router.post('/', requireAdmin, async (req, res) => {
 });
 
 // Update source
-router.put('/:id', requireAdmin, async (req, res) => {
+router.put('/:id', async (req, res) => {
     try {
         const existing = await sources.getById(req.params.id);
         if (!existing) {
             return res.status(404).json({ error: 'Source not found' });
         }
 
-        const { name, url, username, password } = req.body;
-        const updated = await sources.update(req.params.id, {
-            name: name || existing.name,
-            url: url || existing.url,
-            username: username !== undefined ? username : existing.username,
-            password: password !== undefined ? password : existing.password
-        });
+        const { name, url, username, password, zapBeforeStreaming, zapDelay } = req.body;
+        // Omitted fields must be merged against the latest record inside the
+        // database transaction, not the snapshot read before another edit.
+        const updates = {};
+        if (name) updates.name = name;
+        if (url) updates.url = url;
+        if (username !== undefined) updates.username = username;
+        if (password !== undefined) updates.password = password;
+        if (zapBeforeStreaming !== undefined) updates.zapBeforeStreaming = zapBeforeStreaming === true;
+        if (zapDelay !== undefined) updates.zapDelay = zapDelayValue(zapDelay);
+        const updated = await sources.update(req.params.id, updates);
+        if (!updated) return res.status(404).json({ error: 'Source not found' });
         // Trigger Sync (if critical fields changed? safely just trigger it)
         syncService.syncSource(parseInt(req.params.id)).catch(console.error);
         res.json(updated);
@@ -115,7 +122,7 @@ router.put('/:id', requireAdmin, async (req, res) => {
 });
 
 // Delete source
-router.delete('/:id', requireAdmin, async (req, res) => {
+router.delete('/:id', async (req, res) => {
     try {
         const sourceId = parseInt(req.params.id);
         const existing = await sources.getById(sourceId);
@@ -124,6 +131,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
         }
 
         // Cascade delete: Clean up SQLite data for this source
+        syncService.invalidateEpgSource(sourceId);
         const db = getDb();
         const deleteCategories = db.prepare('DELETE FROM categories WHERE source_id = ?');
         const deleteItems = db.prepare('DELETE FROM playlist_items WHERE source_id = ?');
@@ -148,7 +156,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
 });
 
 // Toggle source enabled/disabled
-router.post('/:id/toggle', requireAdmin, async (req, res) => {
+router.post('/:id/toggle', async (req, res) => {
     try {
         const updated = await sources.toggleEnabled(req.params.id);
         if (!updated) {
@@ -168,7 +176,7 @@ router.post('/:id/toggle', requireAdmin, async (req, res) => {
 });
 
 // Manual Sync
-router.post('/:id/sync', requireAdmin, async (req, res) => {
+router.post('/:id/sync', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         const source = await sources.getById(id);
@@ -185,7 +193,7 @@ router.post('/:id/sync', requireAdmin, async (req, res) => {
 });
 
 // Test source connection
-router.post('/:id/test', requireAdmin, async (req, res) => {
+router.post('/:id/test', async (req, res) => {
     try {
         const source = await sources.getById(req.params.id);
         if (!source) {
@@ -216,7 +224,7 @@ router.post('/:id/test', requireAdmin, async (req, res) => {
 const M3U_LARGE_THRESHOLD = 50000;
 
 // Estimate by URL (for new sources before creation)
-router.post('/estimate', requireAdmin, async (req, res) => {
+router.post('/estimate', async (req, res) => {
     try {
         const { url, type } = req.body;
 
@@ -245,7 +253,7 @@ router.post('/estimate', requireAdmin, async (req, res) => {
 });
 
 // Estimate by source ID (for existing sources)
-router.get('/:id/estimate', requireAdmin, async (req, res) => {
+router.get('/:id/estimate', async (req, res) => {
     try {
         const source = await sources.getById(req.params.id);
         if (!source) {
@@ -273,7 +281,7 @@ router.get('/:id/estimate', requireAdmin, async (req, res) => {
 });
 
 // Global Sync - sync all enabled sources
-router.post('/sync-all', requireAdmin, async (req, res) => {
+router.post('/sync-all', async (req, res) => {
     try {
         // Trigger global sync (async - don't wait for completion)
         syncService.syncAll().catch(console.error);

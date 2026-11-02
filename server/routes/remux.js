@@ -1,12 +1,59 @@
+const { parseProgram } = require('../services/mpegTsProgram');
+const { redactUrl, redactText, validateHttpUrl } = require('../services/urlSecurity');
 const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
 const db = require('../db');
-const { requireAuth } = require('../auth');
 const activityTracker = require('../services/activityTracker');
-const probeRoute = require('./probe');
 
-router.use(requireAuth);
+const { parseAudioCodecs, audioFilterArgs } = require('../services/remuxAudio');
+
+/**
+ * Allowed input URL schemes for the remux endpoint.
+ *
+ * FFmpeg accepts a wide variety of protocol handlers (file://, concat:,
+ * subfile:, data:, pipe:, crypto:, async:, cache:, ...). Several of them
+ * read from the local filesystem or compose existing protocols, so they
+ * must not be reachable from a request parameter. Remux inputs should only
+ * reference network streams, never local files or protocol wrappers.
+ *
+ * Only plain http/https stream URLs are valid inputs here.
+ */
+const ALLOWED_URL_SCHEMES = new Set(['http:', 'https:']);
+
+/**
+ * The set of ffmpeg protocols we explicitly permit via -protocol_whitelist.
+ * This is a defence-in-depth layer applied on top of the scheme check: even
+ * if a future code path forwarded a different URL, ffmpeg itself would
+ * refuse to touch local files / arbitrary demuxer-level protocols.
+ *
+ * - file/concat/subfile/pipe/data/async/cache are intentionally absent.
+ * - tls/tcp are needed for https; https/http are obvious.
+ * - hls is needed so the demuxer can follow HLS playlists.
+ * - crypto is needed for AES-encrypted HLS segments. Nested file access
+ *   remains blocked, and top-level crypto URLs are rejected by the validator.
+ */
+const FFMPEG_PROTOCOL_WHITELIST = 'http,https,httpproxy,tls,tcp,hls,crypto'; // httpproxy: needed when http_proxy/https_proxy is set
+
+/**
+ * Validate a user-supplied stream URL.
+ * Returns the normalised URL string on success, or null on rejection.
+ */
+function validateStreamUrl(raw) {
+    if (typeof raw !== 'string' || raw.length === 0) return null;
+    // Reject control characters (incl. CR/LF/NUL) before WHATWG URL parsing,
+    // which would otherwise silently strip some of them.
+    if (/[\x00-\x1F\x7F]/.test(raw)) return null;
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch (_) {
+        return null;
+    }
+    if (!ALLOWED_URL_SCHEMES.has(parsed.protocol)) return null;
+    return parsed.toString();
+}
+
 
 /**
  * Remux stream (container conversion only)
@@ -20,8 +67,22 @@ router.use(requireAuth);
  */
 router.get('/', async (req, res) => {
     const { url } = req.query;
+    try { validateHttpUrl(url); } catch (error) { return res.status(400).json({ error: error.message }); }
     if (!url) {
         return res.status(400).json({ error: 'URL parameter is required' });
+    }
+
+    const safeUrl = validateStreamUrl(url);
+    if (!safeUrl) {
+        return res.status(400).json({ error: 'URL must be an http:// or https:// stream URL' });
+    }
+
+    let audioCodecs, program;
+    try {
+        program = parseProgram(req.query.program);
+        audioCodecs = parseAudioCodecs(req.query.audioCodecs);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
     }
 
     const ffmpegPath = req.app.locals.ffmpegPath || 'ffmpeg';
@@ -30,19 +91,18 @@ router.get('/', async (req, res) => {
     const settings = await db.settings.get();
     const userAgent = db.getUserAgent(settings);
 
-    console.log(`[Remux] Starting remux for: ${url}`);
+    console.log(`[Remux] Starting remux for: ${redactUrl(safeUrl)}`);
     console.log(`[Remux] Using User-Agent: ${settings.userAgentPreset}`);
-
-    // AAC inside MPEG-TS is ADTS-framed, which the MP4 muxer rejects ("Malformed AAC bitstream"). The filter only
-    // accepts AAC, so apply it when the probe says the audio is AAC.
-    const audioCodec = probeRoute.cachedAudioCodec(url);
-    const aacFix = audioCodec && audioCodec.toLowerCase().includes('aac') ? ['-bsf:a', 'aac_adtstoasc'] : [];
 
     // FFmpeg arguments for pure remux (no encoding)
     // Very lightweight - just changes container from TS to fragmented MP4
     const args = [
         '-hide_banner',
         '-loglevel', 'warning',
+        // Restrict the protocols ffmpeg is allowed to open for input.
+        // Defence in depth: blocks file://, concat:, subfile:, data:, pipe:, etc.
+        // even if a different URL slipped past validateStreamUrl().
+        '-protocol_whitelist', FFMPEG_PROTOCOL_WHITELIST,
         '-user_agent', userAgent,
         '-user_agent', userAgent,
         // Standard probe size to handle complex containers (MKV) correctly
@@ -54,25 +114,26 @@ router.get('/', async (req, res) => {
         '-err_detect', 'ignore_err',
         // Limit max demux delay to prevent buffering issues with bad timestamps
         '-max_delay', '5000000',
+        '-multiple_requests', '0',
         // Reconnect settings for network drops
         '-reconnect', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
+        '-reconnect_on_http_error', '4xx,5xx',
+        '-reconnect_delay_max', '10',
         // Prevent Range/HEAD requests that some providers reject with 405
         '-seekable', '0',
-        '-i', url,
+        '-i', safeUrl,
         // STRICT MAPPING: Only map video and audio, ignore subtitles/data/attachments
         // This prevents remux failure when source container has incompatible subtitle tracks (e.g. MKV -> MP4)
-        '-map', '0:v',
-        '-map', '0:a',
+        '-map', program === null ? '0:v' : `0:p:${program}:v:0`,
+        '-map', program === null ? '0:a' : `0:p:${program}:a?`,
         // Drop subtitles (-sn) and data (-dn) explicitly
         '-sn', '-dn',
         // Copy streams without re-encoding
         '-c', 'copy',
-        // Ensure extradata is correctly extracted/converted (fixes Annex B -> AVCC issues in Firefox)
-        '-bsf:v', 'dump_extra',
-        // aac_adtstoasc only works for AAC (it breaks AC3/EAC3/MP3), so it is added above only for AAC audio.
-        ...aacFix,
+        // The MP4 muxer handles AVC framing; prepending container extradata corrupts AVCC packets.
+        // Convert ADTS only on probed AAC tracks; leave MP3/AC3/EAC3 untouched.
+        ...audioFilterArgs(audioCodecs),
         // Handle timestamp discontinuities at output
         '-fps_mode', 'passthrough',
         '-max_muxing_queue_size', '1024',
@@ -82,13 +143,13 @@ router.get('/', async (req, res) => {
         '-' // Output to stdout
     ];
 
-    console.log(`[Remux] Full command: ${ffmpegPath} ${args.join(' ')}`);
+    console.log(`[Remux] Full command: ${ffmpegPath} ${redactText(args.join(' '))}`);
 
     let ffmpeg;
     try {
         ffmpeg = spawn(ffmpegPath, args);
     } catch (spawnErr) {
-        console.error('[Remux] Failed to spawn FFmpeg:', spawnErr);
+        console.error('[Remux] Failed to spawn FFmpeg:', redactText(spawnErr.message));
         return res.status(500).json({ error: 'FFmpeg spawn failed', details: spawnErr.message });
     }
 
@@ -99,31 +160,26 @@ router.get('/', async (req, res) => {
     // Pipe stdout to response
     ffmpeg.stdout.pipe(res);
 
-    // This is a single long-lived request (not polled like the proxy
-    // passthrough), so heartbeat it periodically for the dashboard rather
-    // than touching once and going stale after ACTIVE_WINDOW_MS.
-    const touchActivity = () => activityTracker.touch({
-        userId: req.user.id,
-        username: req.user.username,
+    // Single long-lived request: heartbeat it for the Active Streams dashboard until the response closes.
+    activityTracker.heartbeat(res, {
+        userId: req.user?.id,
+        username: req.user?.username,
         url,
         type: 'Remux'
     });
-    touchActivity();
-    const activityInterval = setInterval(touchActivity, 10000);
 
     // Log stderr (useful for debugging)
     ffmpeg.stderr.on('data', (data) => {
         const msg = data.toString();
         // Only log warnings/errors, not progress
         if (msg.includes('Warning') || msg.includes('Error') || msg.includes('error')) {
-            console.log(`[Remux FFmpeg] ${msg}`);
+            console.log(`[Remux FFmpeg] ${redactText(msg)}`);
         }
     });
 
     // Cleanup on client disconnect
-    req.on('close', () => {
+    res.on('close', () => {
         console.log('[Remux] Client disconnected, killing FFmpeg process');
-        clearInterval(activityInterval);
         ffmpeg.kill('SIGKILL');
     });
 
@@ -136,7 +192,7 @@ router.get('/', async (req, res) => {
 
     // Handle spawn errors
     ffmpeg.on('error', (err) => {
-        console.error('[Remux] Failed to spawn FFmpeg:', err);
+        console.error('[Remux] Failed to spawn FFmpeg:', redactText(err.message));
         if (!res.headersSent) {
             res.status(500).json({ error: 'Remux failed to start' });
         }

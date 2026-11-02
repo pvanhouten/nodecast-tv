@@ -1,0 +1,380 @@
+// Regression tests for behaviour that exists only in the pvanhouten fork (not in upstream):
+// the Active Streams dashboard, admin-only source records, the HE-AAC probe rule,
+// outbound HTTP proxy routing, and the OIDC-only-account login guard.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const http = require('node:http');
+const { EventEmitter } = require('node:events');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
+
+const root = path.join(__dirname, '..');
+const post = body => ({ method: 'POST', body: JSON.stringify(body) });
+
+async function listen(server) {
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
+    });
+    return server.address().port;
+}
+
+// Same real-server fixture upstream's authentication tests use: a child process with its own data dir.
+async function serverFixture(t) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodecast-fork-test-'));
+    let child, base;
+    const stop = async () => {
+        if (!child || child.exitCode !== null) return;
+        const closed = new Promise(resolve => child.once('close', resolve));
+        child.kill();
+        await closed;
+    };
+    const start = async () => {
+        child = spawn(process.execPath, ['server/index.js'], { cwd: root,
+            env: { ...process.env, PORT: '0', NODECAST_DATA_DIR: dir,
+                NODECAST_DISABLE_BACKGROUND_JOBS: 'true', JWT_SECRET: '', SESSION_SECRET: '',
+                OIDC_ISSUER_URL: '', ALLOW_LOCAL_MEDIA_URLS: 'true', AUTH_COOKIE_SECURE: 'false' },
+            stdio: ['ignore', 'pipe', 'pipe'] });
+        let output = '';
+        base = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`Server startup timed out: ${output}`)), 15000);
+            child.stdout.on('data', chunk => {
+                output += chunk;
+                const match = output.match(/server running on http:\/\/localhost:(\d+)/);
+                if (match) { clearTimeout(timer); resolve(`http://127.0.0.1:${match[1]}`); }
+            });
+            child.stderr.on('data', chunk => { output += chunk; });
+            child.once('exit', code => { clearTimeout(timer); reject(new Error(`Server exited ${code}: ${output}`)); });
+            child.once('error', reject);
+        });
+        return base;
+    };
+    t.after(async () => {
+        await stop();
+        assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+    await start();
+    const request = async (endpoint, options = {}) => {
+        const response = await fetch(`${base}${endpoint}`, { ...options,
+            headers: { 'Content-Type': 'application/json', ...options.headers } });
+        const body = await response.text();
+        let parsed = null;
+        try { parsed = body ? JSON.parse(body) : null; } catch { parsed = body; }
+        return { status: response.status, body: parsed,
+            cookie: response.headers.getSetCookie().find(value => value.startsWith('nodecast_auth_')) };
+    };
+    return { dir, request, start, stop };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Active Streams: activity tracker
+// ---------------------------------------------------------------------------------------------
+
+test('activity tracker keeps one entry per user and only a new manifest changes the stream shown', { timeout: 60_000 }, t => {
+    const tracker = require('../server/services/activityTracker');
+    let now = 1_000_000;
+    t.mock.method(Date, 'now', () => now);
+    const manifest = 'http://p.test/live/user/pass/101.m3u8?token=one';
+    tracker.touch({ userId: 'u1', username: 'Ann', url: manifest, type: 'Live (proxy)', label: 'News' });
+    const get = () => tracker.getActive().filter(entry => entry.userId === 'u1');
+
+    now += 5000; // a segment under a different path keeps the entry alive but never changes it
+    tracker.touch({ userId: 'u1', username: 'Ann', url: 'http://cdn.test/segments/seg-1.ts', type: 'Live (proxy)' });
+    let [entry] = get();
+    assert.equal(get().length, 1);
+    assert.deepEqual({ url: entry.url, label: entry.label, startTime: entry.startTime, lastAccess: entry.lastAccess },
+        { url: manifest, label: 'News', startTime: 1_000_000, lastAccess: 1_005_000 });
+    assert.deepEqual({ id: entry.id, killable: entry.killable, status: entry.status, username: entry.username },
+        { id: null, killable: false, status: 'Live (proxy)', username: 'Ann' });
+
+    now += 1000; // the same manifest with a rotated token is the same stream
+    tracker.touch({ userId: 'u1', username: 'Ann', url: 'http://p.test/live/user/pass/101.m3u8?token=two',
+        type: 'Live (proxy)', label: 'Renamed' });
+    [entry] = get();
+    assert.equal(entry.label, 'News');
+    assert.equal(entry.startTime, 1_000_000);
+
+    now += 1000; // a different manifest is a real channel switch: new label, restarted clock
+    tracker.touch({ userId: 'u1', username: 'Ann', url: 'http://p.test/live/user/pass/202.m3u8', type: 'Live (proxy)', label: 'Sports' });
+    [entry] = get();
+    assert.equal(entry.label, 'Sports');
+    assert.equal(entry.startTime, now);
+
+    tracker.touch({ userId: 'u2', username: 'Bo', url: 'http://p.test/movie.mp4', type: 'Remux' });
+    assert.equal(tracker.getActive().filter(e => e.userId === 'u2').length, 1, 'users are tracked separately');
+
+    now += 21_000; // idle past the active window: no longer reported
+    assert.equal(get().length, 0);
+});
+
+test('activity heartbeat keeps a long request visible and stops when the response closes', { timeout: 60_000 }, t => {
+    const tracker = require('../server/services/activityTracker');
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    let now = 5_000_000;
+    t.mock.method(Date, 'now', () => now);
+    const res = new EventEmitter();
+    const lastAccess = () => tracker.getActive().find(entry => entry.userId === 'hb')?.lastAccess;
+
+    tracker.heartbeat(res, { userId: 'hb', username: 'Hal', url: 'http://p.test/movie.mp4', type: 'Remux' });
+    assert.equal(lastAccess(), 5_000_000, 'registered immediately');
+    now += 10_000; t.mock.timers.tick(10_000);
+    assert.equal(lastAccess(), 5_010_000, 'refreshed by the interval');
+    now += 10_000; t.mock.timers.tick(10_000);
+    assert.equal(lastAccess(), 5_020_000);
+
+    res.emit('close');
+    now += 10_000; t.mock.timers.tick(10_000);
+    assert.equal(lastAccess(), 5_020_000, 'no further refreshes after the response closes');
+});
+
+// ---------------------------------------------------------------------------------------------
+// HE-AAC probe rule
+// ---------------------------------------------------------------------------------------------
+
+test('probe sends HE-AAC to transcode but lets plain AAC-LC be remuxed', { timeout: 60_000 }, () => {
+    const { analyzeProbeResult } = require('../server/routes/probe');
+    const probeResult = profile => ({
+        format: { format_name: 'mpegts', duration: '60' },
+        streams: [
+            { index: 0, codec_type: 'video', codec_name: 'h264', width: 1280, height: 720 },
+            { index: 1, codec_type: 'audio', codec_name: 'aac', channels: 2, profile }
+        ]
+    });
+    const lc = analyzeProbeResult(probeResult('LC'), 'http://p.test/live.ts');
+    assert.equal(lc.needsTranscode, false);
+    assert.equal(lc.needsRemux, true, 'raw TS with browser-safe codecs is a remux, not a transcode');
+    for (const profile of ['HE-AAC', 'HE-AACv2', 'SBR']) {
+        const he = analyzeProbeResult(probeResult(profile), 'http://p.test/live.ts');
+        assert.equal(he.needsTranscode, true, `${profile} must be re-encoded`);
+        assert.equal(he.compatible, false);
+    }
+    const noProfile = analyzeProbeResult(probeResult(undefined), 'http://p.test/live.ts');
+    assert.equal(noProfile.needsTranscode, false, 'a missing profile is treated as plain AAC');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Outbound proxy routing
+// ---------------------------------------------------------------------------------------------
+
+test('outbound proxy sends fetch() through http_proxy when set and stays direct otherwise', { timeout: 60_000 }, async t => {
+    // undici tunnels every proxied request (even plain HTTP) with CONNECT, so the stand-in proxy must speak it.
+    const seenBy = { proxy: [], target: [] };
+    const target = http.createServer((req, res) => { seenBy.target.push(`${req.method} ${req.url}`); res.end('reached-target'); });
+    const proxy = http.createServer((req, res) => { res.statusCode = 405; res.end(); });
+    proxy.on('connect', (req, socket, head) => {
+        seenBy.proxy.push(`CONNECT ${req.url}`);
+        const [host, port] = req.url.split(':');
+        const upstream = net.connect(Number(port), host, () => {
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            upstream.write(head);
+            upstream.pipe(socket);
+            socket.pipe(upstream);
+        });
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+    });
+    const [proxyPort, targetPort] = [await listen(proxy), await listen(target)];
+    t.after(() => { proxy.closeAllConnections(); proxy.close(); target.closeAllConnections(); target.close(); });
+
+    const run = env => new Promise((resolve, reject) => {
+        const clean = { ...process.env };
+        for (const key of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'no_proxy', 'NO_PROXY']) delete clean[key];
+        const script = `require('./server/outboundProxy');
+            fetch('http://127.0.0.1:${targetPort}/probe').then(r => r.text()).then(body => console.log('BODY:' + body));`;
+        const child = spawn(process.execPath, ['-e', script], { cwd: root, env: { ...clean, ...env } });
+        let output = '';
+        // A hung request would otherwise surface only as a bare test timeout; kill it and keep what it printed.
+        const watchdog = setTimeout(() => { output += '\n[test] child did not finish in 20s'; child.kill('SIGKILL'); }, 20_000);
+        child.stdout.on('data', chunk => { output += chunk; });
+        child.stderr.on('data', chunk => { output += chunk; });
+        child.once('error', reject);
+        child.once('close', () => { clearTimeout(watchdog); resolve(output); });
+    });
+
+    const direct = await run({});
+    assert.match(direct, /BODY:reached-target/);
+    assert.doesNotMatch(direct, /\[Proxy\]/);
+    assert.deepEqual(seenBy.proxy, [], 'no proxy variables means no proxy');
+    assert.deepEqual(seenBy.target, ['GET /probe']);
+
+    seenBy.target.length = 0;
+    const proxied = await run({ HTTP_PROXY: `http://127.0.0.1:${proxyPort}` });
+    assert.match(proxied, /\[Proxy\] Outbound fetch\(\) routed through/);
+    assert.match(proxied, /BODY:reached-target/);
+    assert.deepEqual(seenBy.proxy, [`CONNECT 127.0.0.1:${targetPort}`], 'the request must go through the proxy');
+    assert.deepEqual(seenBy.target, ['GET /probe'], 'and still reach the target, through the tunnel');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Real application: admin-only source records, Active Streams listing, OIDC-only login guard
+// ---------------------------------------------------------------------------------------------
+
+test('source records stay admin-only, the list is sanitized, and Active Streams reports proxied viewing', { timeout: 60_000 }, async t => {
+    const provider = http.createServer((req, res) => { res.setHeader('Content-Type', 'video/mp2t'); res.end('segment-bytes'); });
+    const providerPort = await listen(provider);
+    t.after(() => provider.close());
+
+    const { request } = await serverFixture(t);
+    const admin = await request('/api/auth/setup', post({ username: 'Admin', password: 'password123' }));
+    assert.equal(admin.status, 201);
+    const adminHeaders = { Cookie: admin.cookie.split(';')[0] };
+    assert.equal((await request('/api/auth/users', { ...post({ username: 'Viewer', password: 'password123', role: 'viewer' }), headers: adminHeaders })).status, 201);
+    const viewerLogin = await request('/api/auth/login', post({ username: 'Viewer', password: 'password123' }));
+    const viewerHeaders = { Cookie: viewerLogin.cookie.split(';')[0] };
+
+    const created = await request('/api/sources', { ...post({ type: 'xtream', name: 'Provider', url: 'http://127.0.0.1:9',
+        username: 'provider-user', password: 'provider-secret' }), headers: adminHeaders });
+    assert.equal(created.status, 201);
+    const id = created.body.id;
+
+    // A viewer can list sources, but never sees the provider password.
+    const list = await request('/api/sources', { headers: viewerHeaders });
+    assert.equal(list.status, 200);
+    assert.equal(list.body.length, 1);
+    assert.doesNotMatch(JSON.stringify(list.body), /provider-secret/);
+
+    // Individual source records carry the provider credentials: admin only, including reads.
+    for (const route of [`/api/sources/${id}`, '/api/sources/type/xtream', '/api/sources/status', `/api/sources/${id}/estimate`]) {
+        assert.equal((await request(route, { headers: viewerHeaders })).status, 403, `viewer ${route}`);
+    }
+    const record = await request(`/api/sources/${id}`, { headers: adminHeaders });
+    assert.equal(record.status, 200);
+    assert.equal(record.body.username, 'provider-user');
+
+    // Clearing a source's cached guide is also admin only.
+    assert.equal((await request(`/api/proxy/epg/${id}/cache`, { method: 'DELETE', headers: viewerHeaders })).status, 403);
+    assert.notEqual((await request(`/api/proxy/epg/${id}/cache`, { method: 'DELETE', headers: adminHeaders })).status, 403);
+
+    // Active Streams: admin only, and a viewer's proxied playback shows up as a non-killable entry.
+    assert.equal((await request('/api/transcode/sessions', { headers: viewerHeaders })).status, 403);
+    const before = await request('/api/transcode/sessions', { headers: adminHeaders });
+    assert.equal(before.status, 200);
+    assert.deepEqual(before.body, []);
+    const proxied = await request(`/api/proxy/stream?url=${encodeURIComponent(`http://127.0.0.1:${providerPort}/seg-1.ts`)}`, { headers: viewerHeaders });
+    assert.equal(proxied.status, 200);
+    const after = await request('/api/transcode/sessions', { headers: adminHeaders });
+    assert.equal(after.status, 200);
+    const mine = after.body.find(entry => entry.username === 'Viewer');
+    assert.ok(mine, 'the viewer appears in Active Streams');
+    assert.equal(mine.status, 'Live (proxy)');
+    assert.equal(mine.killable, false);
+    assert.equal(mine.id, null);
+});
+
+test('an account with no local password cannot sign in with a password and gets a 401, not a server error', { timeout: 60_000 }, async t => {
+    const fixture = await serverFixture(t);
+    await fixture.request('/api/auth/setup', post({ username: 'Admin', password: 'password123' }));
+    await fixture.stop();
+    const filename = path.join(fixture.dir, 'db.json'), data = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    data.users.push({ id: data.nextId++, username: 'SsoOnly', role: 'viewer', passwordHash: null, oidcId: 'sub-123' });
+    fs.writeFileSync(filename, JSON.stringify(data));
+    await fixture.start();
+
+    for (const password of ['anything-at-all', 'password123']) {
+        const login = await fixture.request('/api/auth/login', post({ username: 'SsoOnly', password }));
+        assert.equal(login.status, 401);
+    }
+    const admin = await fixture.request('/api/auth/login', post({ username: 'Admin', password: 'password123' }));
+    assert.equal(admin.status, 200, 'normal accounts are unaffected');
+});
+
+test('every ffmpeg protocol whitelist allows httpproxy, which ffmpeg needs when http_proxy/https_proxy is set', { timeout: 60_000 }, () => {
+    const { FFMPEG_PROTOCOL_WHITELIST } = require('../server/services/urlSecurity');
+    assert.ok(FFMPEG_PROTOCOL_WHITELIST.split(',').includes('httpproxy'));
+    for (const file of ['routes/remux.js', 'routes/subtitle.js']) {
+        const src = fs.readFileSync(path.join(root, 'server', file), 'utf8');
+        const lists = [...src.matchAll(/FFMPEG_PROTOCOL_WHITELIST\s*=\s*'([^']+)'|'-protocol_whitelist',\s*'([^']+)'/g)]
+            .map(m => (m[1] || m[2]).split(','));
+        assert.ok(lists.length > 0, file);
+        for (const list of lists) assert.ok(list.includes('httpproxy'), file);
+    }
+});
+
+test('channel names and guide shows carry hover text with the full name', { timeout: 60_000 }, () => {
+    const list = fs.readFileSync(path.join(root, 'public/js/components/ChannelList.js'), 'utf8');
+    const guide = fs.readFileSync(path.join(root, 'public/js/components/EpgGuide.js'), 'utf8');
+    assert.equal((list.match(/<div class="channel-name">/g) || []).length, 0, 'every channel name needs a title');
+    assert.ok((list.match(/<div class="channel-name" title=/g) || []).length >= 3);
+    assert.match(guide, /<span class="epg-channel-name" title=/);
+    assert.match(guide, /<div class="epg-program \$\{isCurrent \? 'current' : ''\}"\s+style="width: \$\{width\}px;"\s+title=/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Security: login throttle, Active Streams "Stop", and the VPN-proxy / privacy paths
+// ---------------------------------------------------------------------------------------------
+
+test('login is throttled to 20 attempts per 15 minutes per IP, and a correct password is blocked while throttled', { timeout: 60_000 }, async t => {
+    const { request } = await serverFixture(t);
+    assert.equal((await request('/api/auth/setup', post({ username: 'Admin', password: 'password123' }))).status, 201);
+    // Cheaper than 20 bcrypt compares: an unknown user fails fast, and still counts as an attempt.
+    for (let attempt = 1; attempt <= 20; attempt++) {
+        const response = await request('/api/auth/login', post({ username: 'nobody', password: 'wrong' }));
+        assert.equal(response.status, 401, `attempt ${attempt}`);
+    }
+    const blocked = await request('/api/auth/login', post({ username: 'Admin', password: 'password123' }));
+    assert.equal(blocked.status, 429);
+    assert.match(String(blocked.body?.error), /too many/i);
+});
+
+test('an admin can stop anyone\'s stream from Active Streams; viewers can only stop their own', { timeout: 60_000 }, async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodecast-stop-test-'));
+    const previousCwd = process.cwd();
+    process.env.NODECAST_DATA_DIR = dir;
+    process.env.NODECAST_DISABLE_BACKGROUND_JOBS = 'true';
+    process.chdir(dir); // the transcode cache lives under the working directory
+    t.after(() => {
+        process.chdir(previousCwd);
+        assert.equal(path.dirname(path.resolve(dir)), path.resolve(os.tmpdir()));
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+    const service = require('../server/services/transcodeSession');
+    const express = require('express');
+    const app = express();
+    app.use(express.json());
+    app.use((req, res, next) => { req.user = JSON.parse(req.get('x-test-user')); next(); }); // stands in for requireAuth
+    app.use('/api/transcode', require('../server/routes/transcode'));
+    const server = http.createServer(app);
+    const port = await listen(server);
+    t.after(() => server.close());
+
+    const viewerA = { id: 11, username: 'A', role: 'viewer' }, viewerB = { id: 12, username: 'B', role: 'viewer' };
+    const admin = { id: 1, username: 'Admin', role: 'admin' };
+    const stop = (user, id) => fetch(`http://127.0.0.1:${port}/api/transcode/${id}`, { method: 'DELETE', headers: { 'x-test-user': JSON.stringify(user) } });
+    const make = async user => {
+        const session = await service.createSession(`http://provider.test/${user.id}`, { ownerId: user.id, userId: user.id, username: user.username, videoMode: 'copy' });
+        session.status = 'running';
+        return session;
+    };
+
+    const a1 = await make(viewerA);
+    assert.equal((await stop(viewerB, a1.id)).status, 403, 'another viewer cannot stop it');
+    assert.ok(service.getSession(a1.id), 'and it is still running');
+    assert.equal((await stop(viewerA, a1.id)).status, 200, 'the owner can stop it');
+    assert.equal(service.getSession(a1.id), undefined);
+
+    const a2 = await make(viewerA);
+    assert.equal((await stop(admin, a2.id)).status, 200, 'an admin can stop a viewer\'s stream');
+    assert.equal(service.getSession(a2.id), undefined);
+    assert.equal((await stop(admin, 'does-not-exist')).status, 404);
+});
+
+test('privacy: provider traffic stays on the server (proxy env inherited, curl http(s)-only, no direct poster loads)', { timeout: 60_000 }, () => {
+    // Every child process the app starts must inherit http_proxy/https_proxy, so none may pass its own env.
+    for (const file of ['routes/probe.js', 'routes/remux.js', 'routes/proxy.js', 'routes/transcode.js', 'routes/subtitle.js', 'services/transcodeSession.js']) {
+        const src = fs.readFileSync(path.join(root, 'server', file), 'utf8');
+        const spawns = [...src.matchAll(/spawn\(([^;]*)\);/g)].map(match => match[1]);
+        assert.ok(spawns.length > 0, file);
+        for (const call of spawns) assert.doesNotMatch(call, /\benv\b/, `${file} must not override the child's environment`);
+    }
+    // The image proxy's curl may not follow a redirect into another protocol.
+    const proxy = fs.readFileSync(path.join(root, 'server/routes/proxy.js'), 'utf8');
+    assert.match(proxy, /'--proto', '=http,https', '--proto-redir', '=http,https'/);
+    // The Watch page's recommended posters go through the server like every other provider image.
+    const watch = fs.readFileSync(path.join(root, 'public/js/pages/WatchPage.js'), 'utf8');
+    assert.doesNotMatch(watch, /<img src="\$\{movie\.stream_icon \|\| movie\.cover/);
+    assert.match(watch, /proxiedImage\(movie\.stream_icon \|\| movie\.cover\)/);
+});

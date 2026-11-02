@@ -123,10 +123,22 @@ let cleanupInterval = null;
 function startCleanupInterval() {
     if (cleanupInterval) return;
     cleanupInterval = setInterval(prune, 60 * 1000);
+    // Don't let this housekeeping timer keep the process (or a test runner) alive.
+    cleanupInterval.unref?.();
+}
+
+// Keep an entry alive for one long-lived request (e.g. a remux) until its response closes, so the dashboard
+// does not go stale after ACTIVE_WINDOW_MS. Lives here so route files need no timer globals.
+function heartbeat(res, info, intervalMs = 10 * 1000) {
+    touch(info);
+    const timer = setInterval(() => touch(info), intervalMs);
+    timer.unref?.();
+    res.once('close', () => clearInterval(timer));
 }
 
 module.exports = {
     touch,
     getActive,
+    heartbeat,
     startCleanupInterval
 };

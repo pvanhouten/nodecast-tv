@@ -597,7 +597,7 @@ class EpgGuide {
             </button>
             <img class="epg-channel-logo" src="${logo}" 
                  alt="" onerror="this.onerror=null;this.src='/img/placeholder.png'">
-            <span class="epg-channel-name">${name}</span>
+            <span class="epg-channel-name" title="${this.attrEscape(name)}">${name}</span>
             <div class="resize-handle"></div>
           </div>
           <div class="epg-programs">
@@ -607,6 +607,11 @@ class EpgGuide {
 
         this.attachRowListeners(row);
         return row;
+    }
+
+    /** Escape text for use inside a double-quoted HTML attribute (hover tooltips). */
+    attrEscape(text) {
+        return String(text ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     /**
@@ -806,6 +811,7 @@ class EpgGuide {
             html += `
         <div class="epg-program ${isCurrent ? 'current' : ''}" 
              style="width: ${width}px;"
+             title="${this.attrEscape((prog.title || 'Unknown') + ' (' + new Date(prog.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' - ' + new Date(prog.stop).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ')')}"
              data-title="${prog.title || ''}"
              data-description="${prog.description || ''}"
              data-start="${prog.start}"
