@@ -173,10 +173,12 @@ test('outbound proxy sends fetch() through http_proxy when set and stays direct 
             fetch('http://127.0.0.1:${targetPort}/probe').then(r => r.text()).then(body => console.log('BODY:' + body));`;
         const child = spawn(process.execPath, ['-e', script], { cwd: root, env: { ...clean, ...env } });
         let output = '';
+        // A hung request would otherwise surface only as a bare test timeout; kill it and keep what it printed.
+        const watchdog = setTimeout(() => { output += '\n[test] child did not finish in 20s'; child.kill('SIGKILL'); }, 20_000);
         child.stdout.on('data', chunk => { output += chunk; });
         child.stderr.on('data', chunk => { output += chunk; });
         child.once('error', reject);
-        child.once('close', () => resolve(output));
+        child.once('close', () => { clearTimeout(watchdog); resolve(output); });
     });
 
     const direct = await run({});
