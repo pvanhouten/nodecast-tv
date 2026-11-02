@@ -23,6 +23,6 @@ jobs:
       - run: npm ci
       - name: Install Chromium and WebKit for browser regressions
         run: npx playwright install --with-deps chromium webkit
-      - run: npm test
+      - run: npm test -- --test-force-exit
         env:
           NODECAST_BROWSER_TESTS: '1'

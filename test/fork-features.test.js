@@ -73,7 +73,7 @@ async function serverFixture(t) {
 // Active Streams: activity tracker
 // ---------------------------------------------------------------------------------------------
 
-test('activity tracker keeps one entry per user and only a new manifest changes the stream shown', t => {
+test('activity tracker keeps one entry per user and only a new manifest changes the stream shown', { timeout: 60_000 }, t => {
     const tracker = require('../server/services/activityTracker');
     let now = 1_000_000;
     t.mock.method(Date, 'now', () => now);
@@ -110,7 +110,7 @@ test('activity tracker keeps one entry per user and only a new manifest changes 
     assert.equal(get().length, 0);
 });
 
-test('activity heartbeat keeps a long request visible and stops when the response closes', t => {
+test('activity heartbeat keeps a long request visible and stops when the response closes', { timeout: 60_000 }, t => {
     const tracker = require('../server/services/activityTracker');
     t.mock.timers.enable({ apis: ['setInterval'] });
     let now = 5_000_000;
@@ -134,7 +134,7 @@ test('activity heartbeat keeps a long request visible and stops when the respons
 // HE-AAC probe rule
 // ---------------------------------------------------------------------------------------------
 
-test('probe sends HE-AAC to transcode but lets plain AAC-LC be remuxed', () => {
+test('probe sends HE-AAC to transcode but lets plain AAC-LC be remuxed', { timeout: 60_000 }, () => {
     const { analyzeProbeResult } = require('../server/routes/probe');
     const probeResult = profile => ({
         format: { format_name: 'mpegts', duration: '60' },
@@ -159,7 +159,7 @@ test('probe sends HE-AAC to transcode but lets plain AAC-LC be remuxed', () => {
 // Outbound proxy routing
 // ---------------------------------------------------------------------------------------------
 
-test('outbound proxy sends fetch() through http_proxy when set and stays direct otherwise', async t => {
+test('outbound proxy sends fetch() through http_proxy when set and stays direct otherwise', { timeout: 60_000 }, async t => {
     const seenBy = { proxy: [], target: [] };
     const proxy = http.createServer((req, res) => { seenBy.proxy.push(`${req.method} ${req.url}`); res.end('via-proxy'); });
     const target = http.createServer((req, res) => { seenBy.target.push(`${req.method} ${req.url}`); res.end('direct'); });
@@ -197,7 +197,7 @@ test('outbound proxy sends fetch() through http_proxy when set and stays direct 
 // Real application: admin-only source records, Active Streams listing, OIDC-only login guard
 // ---------------------------------------------------------------------------------------------
 
-test('source records stay admin-only, the list is sanitized, and Active Streams reports proxied viewing', async t => {
+test('source records stay admin-only, the list is sanitized, and Active Streams reports proxied viewing', { timeout: 60_000 }, async t => {
     const provider = http.createServer((req, res) => { res.setHeader('Content-Type', 'video/mp2t'); res.end('segment-bytes'); });
     const providerPort = await listen(provider);
     t.after(() => provider.close());
@@ -249,7 +249,7 @@ test('source records stay admin-only, the list is sanitized, and Active Streams 
     assert.equal(mine.id, null);
 });
 
-test('an account with no local password cannot sign in with a password and gets a 401, not a server error', async t => {
+test('an account with no local password cannot sign in with a password and gets a 401, not a server error', { timeout: 60_000 }, async t => {
     const fixture = await serverFixture(t);
     await fixture.request('/api/auth/setup', post({ username: 'Admin', password: 'password123' }));
     await fixture.stop();
