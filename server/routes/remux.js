@@ -5,7 +5,6 @@ const router = express.Router();
 const { spawn } = require('child_process');
 const db = require('../db');
 const activityTracker = require('../services/activityTracker');
-const probeRoute = require('./probe');
 
 const { parseAudioCodecs, audioFilterArgs } = require('../services/remuxAudio');
 
