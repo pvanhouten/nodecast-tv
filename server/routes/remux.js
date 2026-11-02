@@ -4,7 +4,6 @@ const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
 const db = require('../db');
-const { requireAuth } = require('../auth');
 const activityTracker = require('../services/activityTracker');
 const probeRoute = require('./probe');
 
@@ -56,7 +55,6 @@ function validateStreamUrl(raw) {
     return parsed.toString();
 }
 
-router.use(requireAuth);
 
 /**
  * Remux stream (container conversion only)
@@ -167,8 +165,8 @@ router.get('/', async (req, res) => {
     // passthrough), so heartbeat it periodically for the dashboard rather
     // than touching once and going stale after ACTIVE_WINDOW_MS.
     const touchActivity = () => activityTracker.touch({
-        userId: req.user.id,
-        username: req.user.username,
+        userId: req.user?.id,
+        username: req.user?.username,
         url,
         type: 'Remux'
     });

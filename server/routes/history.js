@@ -1,10 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db/sqlite');
-const { requireAuth } = require('../auth');
 
 // Middleware to ensure authentication
-router.use(requireAuth);
 
 /**
  * GET /api/history

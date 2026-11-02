@@ -193,8 +193,12 @@ app.use('/api', (req, res, next) => {
     } catch (error) { res.status(400).json({ error: error.message }); }
 });
 app.use('/api', (req, res, next) => {
-    const adminAction = !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
-        && /^\/(sources|channels|settings|proxy\/cache)(\/|$)/.test(req.path);
+    const readOnly = ['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    // Writes to these areas are admin-only. Reading an individual source record (/sources/:id, /type/:type,
+    // /status, /:id/estimate) is also admin-only because it carries the provider username and password;
+    // the sanitized source list at GET /sources stays available to every signed-in user.
+    const adminAction = (!readOnly && /^\/(sources|channels|settings|proxy\/cache|proxy\/epg\/[^/]+\/cache)(\/|$)/.test(req.path))
+        || (readOnly && /^\/sources\/./.test(req.path));
     if (adminAction) return auth.requireAdmin(req, res, next);
     next();
 });

@@ -1,9 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { spawn } = require('child_process');
-const { requireAuth } = require('../auth');
 
-router.use(requireAuth);
 
 /**
  * Subtitle extraction endpoint

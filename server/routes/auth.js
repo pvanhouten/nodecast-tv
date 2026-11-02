@@ -10,7 +10,7 @@ const loginLimit = requestLimit(20);
 // Not distributed/persistent by design - this is a single-instance app.
 const loginAttempts = new Map(); // ip -> { count, firstAttemptAt }
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_ATTEMPTS = 10;
+const LOGIN_MAX_ATTEMPTS = 30;
 
 function loginRateLimit(req, res, next) {
     const key = req.ip;

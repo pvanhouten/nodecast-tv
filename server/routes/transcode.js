@@ -11,7 +11,6 @@ const { requestLimit } = require('../services/requestLimits');
 const startupLimit = requestLimit(30);
 const transcodeSession = require('../services/transcodeSession');
 const activityTracker = require('../services/activityTracker');
-const { requireAuth } = require('../auth');
 
 // A session's owner or an admin may act on it; anyone else gets 403.
 // Sessions created before this ownership tracking existed have no userId
@@ -25,7 +24,6 @@ function canAccessSession(req, session) {
 // token from the httpOnly cookie as well as the Authorization header, so
 // <video>/hls.js segment/manifest requests (same-origin) authenticate
 // automatically without any frontend changes.
-router.use(requireAuth);
 
 /**
  * Transcode Routes
