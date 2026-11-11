@@ -115,3 +115,34 @@ test('lineups: NFL depth chart joined with roster jersey numbers', () => {
     assert.deepEqual(out.map((p) => [p.unit, p.pos, p.num, p.name]), [
         ['Offense', 'QB', '8', 'Starting QB'], ['Offense', 'WR', '81', 'Wide Out'], ['Defense', 'LDE', '97', 'Edge']]);
 });
+
+test('players: box score merges stat groups per athlete (NFL-style)', () => {
+    const ath = (id, n, jersey) => ({ athlete: { id, displayName: n, jersey, position: { abbreviation: 'QB' } }, stats: ['16/26', '242'] });
+    const summary = { header: { competitions: [{ competitors: [{ id: '33', homeAway: 'home' }] }] },
+        boxscore: { players: [{ team: { id: '33', shortDisplayName: 'Ravens' }, statistics: [
+            { name: 'passing', labels: ['C/ATT', 'YDS'], athletes: [ath('1', 'Lamar', '8')] },
+            { name: 'rushing', labels: ['CAR', 'YDS'], athletes: [{ athlete: { id: '1', displayName: 'Lamar', jersey: '8' }, stats: ['7', '50'] }] }] }] } };
+    const [t] = gs.boxPlayers(summary, 'football');
+    assert.equal(t.homeAway, 'home');
+    assert.equal(t.players.length, 1);
+    assert.deepEqual(t.players[0].groups.map((g) => g.title), ['Passing', 'Rushing']);
+    assert.deepEqual(t.players[0].groups[1].stats, [['CAR', '7'], ['YDS', '50']]);
+});
+
+test('players: soccer drops zero stats; bad ids rejected', async () => {
+    const summary = { rosters: [{ homeAway: 'away', team: { shortDisplayName: 'PSG' }, roster: [{ jersey: '10', starter: true, athlete: { id: '5', displayName: 'Ace' }, position: { abbreviation: 'F' },
+        stats: [{ shortDisplayName: 'G', displayValue: '2' }, { shortDisplayName: 'YC', displayValue: '0' }] }] }] };
+    const [t] = gs.boxPlayers(summary, 'soccer');
+    assert.deepEqual(t.players[0].groups[0].stats, [['G', '2']]);
+    assert.equal(await gs.players('nope', '1'), null);
+    assert.equal(await gs.playerSeason('nfl', '1;x'), null);
+});
+
+test('lineups: hockey lists skaters and goalies by unit', () => {
+    const summary = { header: { competitions: [{ competitors: [{ id: '4', homeAway: 'away' }] }] },
+        boxscore: { players: [{ team: { id: '4', shortDisplayName: 'Avalanche' }, statistics: [
+            { name: 'forwards', labels: ['G', 'A'], athletes: [{ athlete: { id: '9', displayName: 'Winger', jersey: '13', position: { abbreviation: 'RW' } }, stats: ['1', '2'] }] },
+            { name: 'goalies', labels: ['SV%'], athletes: [{ athlete: { id: '8', displayName: 'Goalie', jersey: '39', position: { abbreviation: 'G' } }, stats: ['.903'] }] }] }] } };
+    const [t] = gs.buildLineups(summary, 'hockey');
+    assert.deepEqual(t.starters.map((p) => [p.unit, p.num, p.stat]), [['Forwards', '13', '1 G, 2 A'], ['Goalies', '39', '.903 SV%']]);
+});

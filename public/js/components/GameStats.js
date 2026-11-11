@@ -14,6 +14,11 @@ const GameStats = {
     game: null,
     lineupsOpen: false,
     lineupTimer: null,
+    query: '',
+    selected: null,   // player id shown in the stat card
+    playersData: null,
+    playersAt: 0,
+    seasonCache: {},
 
     init() {
         this.injectStyles();
@@ -23,6 +28,7 @@ const GameStats = {
     setChannel(channel) {
         clearTimeout(this.timer);
         this.closeLineups();
+        this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
         this.title = (channel && (channel.name || channel.tvgName)) || '';
         this.render(null);
         if (this.title) this.poll(this.title);
@@ -64,6 +70,19 @@ const GameStats = {
             host.appendChild(this.el);
         }
         this.el.hidden = false;
+        // The lineups panel (search box, results, columns) is built once per game and never re-rendered by a
+        // score refresh, otherwise the search box would lose focus/text every poll.
+        if (!this.game || this.game.id !== game.id || !this.el.querySelector('.gs-lineups')) {
+            this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
+            this.el.innerHTML = `<div class="gs-top"></div>
+                <div class="gs-lineups" hidden>
+                  <div class="gs-search"><input type="search" class="gs-q" placeholder="Find player: name or #" autocomplete="off" spellcheck="false">
+                    <div class="gs-results"></div></div>
+                  <div class="gs-cols"></div></div>`;
+            this.bindSearch();
+            this.lineupsOpen = false;
+            clearTimeout(this.lineupTimer);
+        }
         const row = (t) => `
             <div class="gs-row${t.winner ? ' win' : ''}">
               ${t.logo ? `<img class="gs-logo" src="${this.esc(t.logo)}" alt="" referrerpolicy="no-referrer">` : ''}
@@ -73,15 +92,13 @@ const GameStats = {
             </div>`;
         const live = game.state === 'in';
         this.game = game;
-        const canLineup = game.id && /^(soccer|ncaa-soccer|ncaam|ncaaw|nba|nfl)/.test(game.leagueKey || '');
-        this.el.innerHTML = `
+        const canLineup = game.id && /^(soccer|ncaa-soccer|ncaam|ncaaw|nba|nfl|nhl|mlb)/.test(game.leagueKey || '');
+        this.el.querySelector('.gs-top').innerHTML = `
             <div class="gs-head"><span class="gs-league">${this.esc(game.league)}</span>
               <span class="gs-status${live ? ' live' : ''}">${this.esc(game.detail)}</span></div>
             ${row(game.away)}${row(game.home)}
             ${game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : ''}
-            ${canLineup ? `<button type="button" class="gs-lineups-btn">${this.lineupsOpen ? 'Hide lineups' : 'Lineups'}</button>` : ''}
-            <div class="gs-lineups" ${this.lineupsOpen ? '' : 'hidden'}></div>`;
-        if (this.lineupsOpen) this.loadLineups();
+            ${canLineup ? `<button type="button" class="gs-lineups-btn">${this.lineupsOpen ? 'Hide lineups' : 'Lineups'}</button>` : ''}`;
     },
 
     toggleLineups() {
@@ -101,7 +118,7 @@ const GameStats = {
 
     async loadLineups() {
         const game = this.game;
-        const box = this.el && this.el.querySelector('.gs-lineups');
+        const box = this.el && this.el.querySelector('.gs-cols');
         if (!game || !box) return;
         let data = null;
         try {
@@ -109,19 +126,100 @@ const GameStats = {
             const res = await fetch('/api/gamestats/lineups?' + q, { credentials: 'same-origin' });
             if (res.ok) data = (await res.json()).lineups;
         } catch (_) { /* optional */ }
-        if (game !== this.game || !this.lineupsOpen) return;
+        if (!this.game || game.id !== this.game.id || !this.lineupsOpen) return;
         const teams = (data && data.teams) || [];
         if (!teams.length || !teams.some((t) => t.starters.length)) {
             box.innerHTML = '<div class="gs-empty">Lineups not posted yet</div>';
         } else {
-            const p = (x, sub) => `<div class="gs-p${x.out ? ' out' : ''}${x.in ? ' in' : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(sub ? x.stat || '' : x.pos)}</em></div>`;
+            const p = (x) => `<div class="gs-p${x.out ? ' out' : ''}${x.in ? ' in' : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(x.stat || x.pos)}</em></div>`;
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
-                ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x, data.sport === 'basketball')).join('')}
-                ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x, data.sport === 'basketball')).join('')}` : ''}</div>`;
+                ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x)).join('')}
+                ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x)).join('')}` : ''}</div>`;
             box.innerHTML = teams.map(col).join('') + (data.note ? `<div class="gs-note">${this.esc(data.note)}</div>` : '');
         }
         clearTimeout(this.lineupTimer);
         this.lineupTimer = setTimeout(() => this.loadLineups(), 30000);
+    },
+
+    // ---- Player search: type a name or jersey number, click a result for that player's stats ----
+    bindSearch() {
+        const input = this.el.querySelector('.gs-q');
+        if (!input) return;
+        // The page has global shortcuts (space, F, arrows); keep typing here from triggering them.
+        ['keydown', 'keyup', 'keypress'].forEach((ev) => input.addEventListener(ev, (e) => e.stopPropagation()));
+        let t;
+        input.addEventListener('input', () => {
+            this.query = input.value;
+            this.selected = null;
+            clearTimeout(t);
+            t = setTimeout(() => this.runSearch(), 150);
+        });
+        if (this.query) this.runSearch();
+    },
+
+    async ensurePlayers() {
+        const game = this.game;
+        if (this.playersData && Date.now() - this.playersAt < 30000) return this.playersData;
+        try {
+            const q = 'league=' + encodeURIComponent(game.leagueKey) + '&event=' + encodeURIComponent(game.id);
+            const res = await fetch('/api/gamestats/players?' + q, { credentials: 'same-origin' });
+            if (res.ok) { this.playersData = (await res.json()).players; this.playersAt = Date.now(); }
+        } catch (_) { /* optional */ }
+        return this.game && game.id === this.game.id ? this.playersData : null;
+    },
+
+    norm(v) {
+        return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    },
+
+    async runSearch() {
+        const out = this.el && this.el.querySelector('.gs-results');
+        if (!out) return;
+        const raw = this.query.trim().replace(/^#/, '');
+        if (!raw) { out.innerHTML = ''; return; }
+        const data = await this.ensurePlayers();
+        if (!this.el || !out.isConnected) return;
+        const all = ((data && data.teams) || []).flatMap((t) => t.players.map((p) => ({ ...p, team: t.name })));
+        const q = this.norm(raw);
+        const hits = (/^\d+$/.test(q) ? all.filter((p) => String(p.num) === q) : all.filter((p) => this.norm(p.name).includes(q))).slice(0, 8);
+        this.hits = hits;
+        if (!hits.length) { out.innerHTML = '<div class="gs-empty">No player found</div>'; return; }
+        const sel = hits.find((p) => p.id === this.selected) || (hits.length === 1 ? hits[0] : null);
+        if (sel) { this.selected = sel.id; out.innerHTML = this.card(sel); this.loadSeason(sel); return; }
+        out.innerHTML = hits.map((p) => `<button type="button" class="gs-hit" data-id="${this.esc(p.id)}"><b>${this.esc(p.num)}</b><span>${this.esc(p.name)}</span><em>${this.esc(p.team)}${p.pos ? ' \u00b7 ' + this.esc(p.pos) : ''}</em></button>`).join('');
+        out.querySelectorAll('.gs-hit').forEach((b) => b.addEventListener('click', () => {
+            const p = hits.find((x) => x.id === b.dataset.id);
+            if (!p) return;
+            this.selected = p.id;
+            out.innerHTML = this.card(p);
+            this.loadSeason(p);
+        }));
+    },
+
+    card(p) {
+        const kv = (arr) => arr.map(([l, v]) => `<div class="gs-kv"><b>${this.esc(v)}</b><span>${this.esc(l)}</span></div>`).join('');
+        const groups = (p.groups || []).filter((g) => g.stats.length);
+        return `<div class="gs-card"><div class="gs-card-h"><b>${p.num ? '#' + this.esc(p.num) + ' ' : ''}${this.esc(p.name)}</b>
+            <em>${this.esc(p.team)}${p.pos ? ' \u00b7 ' + this.esc(p.pos) : ''}</em></div>
+          ${groups.length ? groups.map((g) => `<h5>${this.esc(g.title)}</h5><div class="gs-kvs">${kv(g.stats)}</div>`).join('') : '<div class="gs-empty">No stats in this game yet</div>'}
+          <div class="gs-season" data-season="${this.esc(p.id)}"></div></div>`;
+    },
+
+    async loadSeason(p) {
+        const host = this.el && this.el.querySelector('.gs-season');
+        if (!host || !this.game) return;
+        const key = this.game.leagueKey + ':' + p.id;
+        if (!(key in this.seasonCache)) {
+            let season = null;
+            try {
+                const res = await fetch('/api/gamestats/season?league=' + encodeURIComponent(this.game.leagueKey) + '&athlete=' + encodeURIComponent(p.id), { credentials: 'same-origin' });
+                if (res.ok) season = (await res.json()).season;
+            } catch (_) { /* optional */ }
+            this.seasonCache[key] = season;
+        }
+        const s = this.seasonCache[key];
+        if (!s || this.selected !== p.id || !host.isConnected) return;
+        host.innerHTML = `<h5>Season \u00b7 ${this.esc(String(s.title).replace(/career stats/i, '').trim())} ${this.esc(s.split)}</h5><div class="gs-kvs">${s.labels.map((l, i) => `<div class="gs-kv"><b>${this.esc(s.values[i])}</b><span>${this.esc(l)}</span></div>`).join('')}</div>`;
     },
 
     esc(v) {
@@ -133,7 +231,7 @@ const GameStats = {
         const s = document.createElement('style');
         s.id = 'gamestats-css';
         s.textContent = `
-.gamestats{position:absolute;left:12px;bottom:84px;z-index:5;min-width:210px;max-width:320px;padding:8px 10px;
+.gamestats{position:absolute;left:12px;bottom:84px;z-index:5;min-width:210px;max-width:320px;max-height:calc(100% - 100px);overflow-y:auto;padding:8px 10px;
   background:rgba(12,14,20,.78);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);border-radius:10px;
   color:#fff;font:13px/1.35 Inter,system-ui,sans-serif;cursor:pointer;user-select:none;pointer-events:auto}
 .gamestats[hidden]{display:none}
@@ -154,10 +252,20 @@ const GameStats = {
 .gs-lineups-btn{margin-top:6px;width:100%;padding:3px 0;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:11px;cursor:pointer}
 .gs-lineups-btn:hover{background:rgba(255,255,255,.16)}
 .gamestats.collapsed .gs-lineups-btn{display:none}
-.gs-lineups{display:flex;gap:14px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12);cursor:default;max-height:42vh;overflow-y:auto;min-width:420px}
+.gs-lineups{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12);cursor:default;min-width:420px;user-select:text}
 .gs-lineups[hidden]{display:none}
 .gamestats:has(.gs-lineups:not([hidden])){max-width:min(520px,92vw)}
-.gs-col{flex:1;min-width:0}
+.gs-cols{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px}
+.gs-q{width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:12px}
+.gs-hit{display:flex;align-items:baseline;gap:6px;width:100%;margin-top:3px;padding:3px 6px;border:0;border-radius:5px;background:rgba(255,255,255,.07);color:#fff;font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.gs-hit:hover{background:rgba(255,255,255,.16)}
+.gs-hit b{min-width:22px;text-align:right;opacity:.75}.gs-hit span{flex:1}.gs-hit em{font-style:normal;font-size:10px;opacity:.55}
+.gs-card{margin-top:6px;padding:8px;border-radius:8px;background:rgba(255,255,255,.07)}
+.gs-card-h{display:flex;justify-content:space-between;gap:8px;margin-bottom:2px}.gs-card-h em{font-style:normal;font-size:11px;opacity:.6}
+.gs-card h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
+.gs-kvs{display:flex;flex-wrap:wrap;gap:4px 10px}
+.gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}
+.gs-col{flex:1;min-width:150px}
 .gs-col h4{margin:0 0 4px;font-size:12px}.gs-col h4 small{opacity:.6;font-weight:400}
 .gs-col h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
 .gs-p{display:flex;align-items:baseline;gap:6px;font-size:12px;padding:1px 0}
@@ -165,10 +273,9 @@ const GameStats = {
 .gs-p span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gs-p em{font-style:normal;font-size:10px;opacity:.55}
 .gs-p.out span{opacity:.5;text-decoration:line-through}.gs-p.in span::after{content:' \u2191';color:#5bd98c}
-.gs-note{position:sticky;bottom:0;flex-basis:100%;font-size:10px;opacity:.55}
-.gs-lineups:has(.gs-note){flex-wrap:wrap}
+.gs-note{flex-basis:100%;font-size:10px;opacity:.55}
 .gs-empty{opacity:.7;font-size:12px}
-@media (max-width:640px){.gamestats{bottom:110px;left:8px;min-width:170px}.gs-lineups{min-width:0;flex-direction:column}}
+@media (max-width:640px){.gamestats{bottom:110px;left:8px;min-width:170px}.gs-lineups{min-width:0}.gs-cols{flex-direction:column}}
 `;
         document.head.appendChild(s);
     }

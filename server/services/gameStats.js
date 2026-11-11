@@ -198,10 +198,62 @@ function basketballTeams(summary) {
     });
 }
 
+// Every player in a box score with their stat groups. Works for basketball, NFL, NHL and MLB
+// (boxscore.players[team].statistics[category].athletes[]); soccer comes from rosters[].roster[].stats.
+function boxPlayers(summary, sport) {
+    const teams = [];
+    if (sport === 'soccer') {
+        for (const r of summary.rosters || []) {
+            teams.push({
+                homeAway: r.homeAway, name: r.team?.shortDisplayName || r.team?.displayName || '',
+                players: (r.roster || []).map((p) => ({
+                    id: String(p.athlete?.id || ''), num: p.jersey || '', name: p.athlete?.displayName || '',
+                    pos: p.position?.abbreviation || '', starter: !!p.starter,
+                    groups: [{ title: 'This match', stats: (p.stats || []).filter((x) => x.displayValue && x.displayValue !== '0')
+                        .map((x) => [x.shortDisplayName || x.abbreviation || x.displayName, x.displayValue]) }]
+                }))
+            });
+        }
+        return teams;
+    }
+    const compOf = (id) => summary.header?.competitions?.[0]?.competitors?.find((c) => c.id === id);
+    for (const t of summary.boxscore?.players || []) {
+        const byId = new Map();
+        (t.statistics || []).forEach((block, bi) => {
+            const title = ({ forwards: 'Forwards', defenses: 'Defense', goalies: 'Goalies', passing: 'Passing', rushing: 'Rushing',
+                receiving: 'Receiving', fumbles: 'Fumbles', defensive: 'Defense', interceptions: 'Interceptions', kicking: 'Kicking',
+                punting: 'Punting', kickReturns: 'Kick returns', puntReturns: 'Punt returns' })[block.name]
+                || (sport === 'baseball' ? (bi === 0 ? 'Batting' : 'Pitching') : 'This game');
+            for (const a of block.athletes || []) {
+                const id = String(a.athlete?.id || '');
+                if (!id) continue;
+                let p = byId.get(id);
+                if (!p) {
+                    p = { id, num: a.athlete.jersey || '', name: a.athlete.displayName || '', pos: a.athlete.position?.abbreviation || '',
+                        starter: !!a.starter, unit: title, groups: [] };
+                    byId.set(id, p);
+                }
+                p.groups.push({ title, stats: (block.labels || []).map((l, i) => [l, (a.stats || [])[i]]).filter(([, v]) => v != null && v !== '') });
+            }
+        });
+        teams.push({ homeAway: compOf(t.team?.id)?.homeAway || '', name: t.team?.shortDisplayName || t.team?.displayName || '', players: [...byId.values()] });
+    }
+    return teams;
+}
+
 // Pure (exported for tests): turn an ESPN summary into [{ name, formation, starters[], bench[] }].
 function buildLineups(summary, sport) {
     if (sport === 'soccer') return soccerTeams(summary);
     if (sport === 'basketball') return basketballTeams(summary);
+    if (sport === 'hockey' || sport === 'baseball') {
+        // No true "starting lineup" in the box score: list everyone who has played, grouped by unit.
+        return boxPlayers(summary, sport).map((t) => ({
+            homeAway: t.homeAway, name: t.name, formation: '', bench: [],
+            starters: t.players.map((p) => ({ unit: p.unit, num: p.num, name: p.name, pos: p.pos,
+                stat: p.groups[0].stats.filter(([l]) => (sport === 'hockey' ? ['G', 'A', 'SV%'] : ['H-AB', 'IP', 'K', 'ERA']).includes(l))
+                    .map(([l, v]) => `${v} ${l}`).join(', ') }))
+        }));
+    }
     return [];
 }
 
@@ -214,9 +266,17 @@ function getJson(url) {
     return fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
 }
 
+function nflRoster(roster) {
+    const out = [];
+    for (const g of roster?.athletes || []) for (const a of g.items || []) {
+        out.push({ id: String(a.id), num: a.jersey || '', name: a.displayName || a.fullName || '', pos: a.position?.abbreviation || '' });
+    }
+    return out;
+}
+
 function nflTeamStarters(depth, roster) {
     const jersey = new Map();
-    for (const g of roster?.athletes || []) for (const a of g.items || []) jersey.set(String(a.id), a.jersey || '');
+    for (const a of nflRoster(roster)) jersey.set(a.id, a.num);
     const charts = depth?.depthchart || [];
     const pick = (re) => charts.find((c) => re.test(c.name || ''));
     const unit = (chart, label) => Object.entries(chart?.positions || {}).filter(([pos]) => pos !== 'fb' && pos !== 'nb').map(([pos, v]) => {
@@ -235,8 +295,8 @@ function nflTeam(path, teamId) {
     const base = `https://site.api.espn.com/apis/site/v2/sports/${path}/teams/${teamId}`;
     const entry = { at: Date.now(), promise: null };
     entry.promise = Promise.all([getJson(base + '/depthcharts'), getJson(base + '/roster')])
-        .then(([d, r]) => nflTeamStarters(d, r))
-        .catch((err) => { teamCache.delete(key); console.warn(`[GameStats] nfl team ${key} failed: ${err.message}`); return []; });
+        .then(([d, r]) => ({ starters: nflTeamStarters(d, r), roster: nflRoster(r) }))
+        .catch((err) => { teamCache.delete(key); console.warn(`[GameStats] nfl team ${key} failed: ${err.message}`); return { starters: [], roster: [] }; });
     teamCache.set(key, entry);
     return entry.promise;
 }
@@ -247,7 +307,7 @@ async function nflLineups(league, summary) {
         homeAway: c.homeAway || '',
         name: c.team?.shortDisplayName || c.team?.displayName || '',
         formation: '',
-        starters: await nflTeam(league.path, c.team?.id),
+        starters: (await nflTeam(league.path, c.team?.id)).starters,
         bench: []
     })));
     return teams;
@@ -276,4 +336,54 @@ async function lineups(leagueKey, eventId) {
     return entry.promise;
 }
 
-module.exports = { lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+// ---- Player search + season stats -----------------------------------------------------------------
+const playersCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
+const seasonCache = new Map();  // `${leagueKey}:${athleteId}` -> { at, promise }
+
+async function players(leagueKey, eventId) {
+    const league = LEAGUES.find((l) => l.key === leagueKey);
+    if (!league || !/^\d{1,20}$/.test(String(eventId))) return null;
+    const key = `${league.key}:${eventId}`;
+    const hit = playersCache.get(key);
+    if (hit && Date.now() - hit.at < LINEUP_CACHE_MS) return hit.promise;
+    const entry = { at: Date.now(), promise: null };
+    entry.promise = getJson(`https://site.api.espn.com/apis/site/v2/sports/${league.path}/summary?event=${eventId}`)
+        .then(async (d) => {
+            const teams = boxPlayers(d, league.sport);
+            if (league.key === 'nfl') { // box score only lists players with stats; add the full roster so numbers are searchable
+                const comps = d.header?.competitions?.[0]?.competitors || [];
+                for (const c of comps) {
+                    const t = teams.find((x) => x.homeAway === c.homeAway) || (teams.push({ homeAway: c.homeAway, name: c.team?.shortDisplayName || '', players: [] }), teams[teams.length - 1]);
+                    const have = new Set(t.players.map((p) => p.id));
+                    for (const r of (await nflTeam(league.path, c.team?.id)).roster) if (!have.has(r.id)) t.players.push({ ...r, groups: [] });
+                }
+            }
+            return { sport: league.sport, teams };
+        })
+        .catch((err) => { playersCache.delete(key); console.warn(`[GameStats] players ${key} failed: ${err.message}`); return null; });
+    playersCache.set(key, entry);
+    if (playersCache.size > 100) playersCache.delete(playersCache.keys().next().value);
+    return entry.promise;
+}
+
+// Latest-season line from ESPN's athlete overview (not available for every league).
+async function playerSeason(leagueKey, athleteId) {
+    const league = LEAGUES.find((l) => l.key === leagueKey);
+    if (!league || !/^\d{1,20}$/.test(String(athleteId))) return null;
+    const key = `${league.key}:${athleteId}`;
+    const hit = seasonCache.get(key);
+    if (hit && Date.now() - hit.at < TEAM_CACHE_MS) return hit.promise;
+    const entry = { at: Date.now(), promise: null };
+    entry.promise = getJson(`https://site.web.api.espn.com/apis/common/v3/sports/${league.path}/athletes/${athleteId}/overview`)
+        .then((o) => {
+            const st = o.statistics;
+            const split = st?.splits?.[0];
+            return st?.labels && split ? { title: st.displayName || 'Season', split: split.displayName || '', labels: st.labels, values: split.stats } : null;
+        })
+        .catch(() => null);
+    seasonCache.set(key, entry);
+    if (seasonCache.size > 300) seasonCache.delete(seasonCache.keys().next().value);
+    return entry.promise;
+}
+
+module.exports = { players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
