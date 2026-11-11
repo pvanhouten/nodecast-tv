@@ -2,8 +2,9 @@
  * GameStats: a small live-score overlay on the Live TV player.
  * Self-contained (injects its own CSS and DOM). It listens for the existing `channelChanged` event,
  * asks /api/gamestats about the channel name, and shows a scorebug if the title names a real game
- * (e.g. "NCAAB 6 Fairfield @ Wisconsin 8PM"). Click the bug to collapse it to just the score;
- * the "Lineups" button opens player names/numbers (soccer and basketball).
+ * (e.g. "NCAAB 6 Fairfield @ Wisconsin 8PM"). Drag the header to move it (double-click the header to reset),
+ * the "-" button minimizes it to a one-line score pill, and "Lineups" opens player names/numbers plus search.
+ * Position and minimized state are remembered in localStorage.
  */
 const GameStats = {
     POLL_MS: 15000,
@@ -19,8 +20,16 @@ const GameStats = {
     playersData: null,
     playersAt: 0,
     seasonCache: {},
+    min: false,
+    pos: null,        // { x, y } in px from the video container's top-left, or null = default corner
 
     init() {
+        try {
+            this.min = localStorage.getItem('gamestats-min') === '1';
+            this.pos = JSON.parse(localStorage.getItem('gamestats-pos') || 'null');
+        } catch (_) { /* storage unavailable: defaults */ }
+        window.addEventListener('resize', () => this.applyPos());
+        document.addEventListener('fullscreenchange', () => setTimeout(() => this.applyPos(), 50));
         this.injectStyles();
         window.addEventListener('channelChanged', (e) => this.setChannel(e.detail));
     },
@@ -60,14 +69,16 @@ const GameStats = {
         if (!this.el || !host.contains(this.el)) {
             this.el = document.createElement('div');
             this.el.className = 'gamestats';
+            // Keep double-clicks (and taps) on the overlay from reaching the player (fullscreen toggle).
+            this.el.addEventListener('dblclick', (e) => e.stopPropagation());
             this.el.addEventListener('click', (e) => {
-                if (e.target.closest('.gs-lineups-btn')) { this.toggleLineups(); return; }
-                if (e.target.closest('.gs-lineups')) return;
-                this.el.classList.toggle('collapsed');
-                try { localStorage.setItem('gamestats-collapsed', this.el.classList.contains('collapsed') ? '1' : '0'); } catch (_) {}
+                if (e.target.closest('.gs-min-btn')) { this.toggleMin(); return; }
+                if (e.target.closest('.gs-lineups-btn')) this.toggleLineups();
             });
-            try { if (localStorage.getItem('gamestats-collapsed') === '1') this.el.classList.add('collapsed'); } catch (_) {}
+            this.bindDrag();
+            this.el.classList.toggle('min', this.min);
             host.appendChild(this.el);
+            if (window.ResizeObserver) new ResizeObserver(() => this.applyPos()).observe(this.el);
         }
         this.el.hidden = false;
         // The lineups panel (search box, results, columns) is built once per game and never re-rendered by a
@@ -94,11 +105,81 @@ const GameStats = {
         this.game = game;
         const canLineup = game.id && /^(soccer|ncaa-soccer|ncaam|ncaaw|nba|nfl|nhl|mlb)/.test(game.leagueKey || '');
         this.el.querySelector('.gs-top').innerHTML = `
-            <div class="gs-head"><span class="gs-league">${this.esc(game.league)}</span>
-              <span class="gs-status${live ? ' live' : ''}">${this.esc(game.detail)}</span></div>
-            ${row(game.away)}${row(game.home)}
-            ${game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : ''}
-            ${canLineup ? `<button type="button" class="gs-lineups-btn">${this.lineupsOpen ? 'Hide lineups' : 'Lineups'}</button>` : ''}`;
+            <div class="gs-head" title="Drag to move \u00b7 double-click to reset"><span class="gs-league">${this.esc(game.league)}</span>
+              <span class="gs-mini">${this.esc(game.away.abbr || game.away.name)} ${this.esc(game.away.score)}\u2013${this.esc(game.home.score)} ${this.esc(game.home.abbr || game.home.name)}</span>
+              <span class="gs-status${live ? ' live' : ''}">${this.esc(game.detail)}</span>
+              <button type="button" class="gs-min-btn" title="${this.min ? 'Expand' : 'Minimize'}">${this.min ? '+' : '\u2013'}</button></div>
+            <div class="gs-body">
+              ${row(game.away)}${row(game.home)}
+              ${game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : ''}
+              ${canLineup ? `<button type="button" class="gs-lineups-btn">${this.lineupsOpen ? 'Hide lineups' : 'Lineups'}</button>` : ''}
+            </div>`;
+        this.applyPos();
+    },
+
+    toggleMin() {
+        this.min = !this.min;
+        this.el.classList.toggle('min', this.min);
+        const b = this.el.querySelector('.gs-min-btn');
+        if (b) { b.textContent = this.min ? '+' : '\u2013'; b.title = this.min ? 'Expand' : 'Minimize'; }
+        try { localStorage.setItem('gamestats-min', this.min ? '1' : '0'); } catch (_) {}
+        this.applyPos();
+    },
+
+    // ---- Move: drag the header; position is clamped inside the video area ----
+    bindDrag() {
+        let drag = null;
+        this.el.addEventListener('pointerdown', (e) => {
+            const head = e.target.closest('.gs-head');
+            if (!head || e.target.closest('button') || e.button !== 0) return;
+            const host = this.container().getBoundingClientRect();
+            const r = this.el.getBoundingClientRect();
+            drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, host };
+            this.el.setPointerCapture(e.pointerId);
+            this.el.classList.add('dragging');
+            e.preventDefault();
+        });
+        this.el.addEventListener('pointermove', (e) => {
+            if (!drag) return;
+            this.pos = this.clampPos({ x: e.clientX - drag.host.left - drag.dx, y: e.clientY - drag.host.top - drag.dy });
+            this.applyPos();
+        });
+        const end = (e) => {
+            if (!drag) return;
+            drag = null;
+            this.el.classList.remove('dragging');
+            try { this.el.releasePointerCapture(e.pointerId); localStorage.setItem('gamestats-pos', JSON.stringify(this.pos)); } catch (_) {}
+        };
+        this.el.addEventListener('pointerup', end);
+        this.el.addEventListener('pointercancel', end);
+        this.el.addEventListener('dblclick', (e) => {
+            if (!e.target.closest('.gs-head') || e.target.closest('button')) return;
+            this.pos = null;
+            try { localStorage.removeItem('gamestats-pos'); } catch (_) {}
+            this.applyPos();
+        });
+    },
+
+    clampPos(p) {
+        const host = this.container();
+        if (!host || !this.el) return p;
+        const hw = host.clientWidth, hh = host.clientHeight;
+        return { x: Math.round(Math.min(Math.max(0, p.x), Math.max(0, hw - this.el.offsetWidth))),
+                 y: Math.round(Math.min(Math.max(0, p.y), Math.max(0, hh - 40))) };
+    },
+
+    applyPos() {
+        if (!this.el || this.el.hidden) return;
+        const host = this.container();
+        if (!this.pos || !host) {
+            this.el.style.left = this.el.style.top = this.el.style.bottom = this.el.style.maxHeight = '';
+            return;
+        }
+        this.pos = this.clampPos(this.pos);
+        this.el.style.left = this.pos.x + 'px';
+        this.el.style.top = this.pos.y + 'px';
+        this.el.style.bottom = 'auto';
+        this.el.style.maxHeight = Math.max(80, host.clientHeight - this.pos.y - 8) + 'px';
     },
 
     toggleLineups() {
@@ -231,11 +312,19 @@ const GameStats = {
         const s = document.createElement('style');
         s.id = 'gamestats-css';
         s.textContent = `
-.gamestats{position:absolute;left:12px;bottom:84px;z-index:5;min-width:210px;max-width:320px;max-height:calc(100% - 100px);overflow-y:auto;padding:8px 10px;
+.gamestats{box-sizing:border-box;position:absolute;left:12px;bottom:84px;z-index:20;min-width:210px;max-width:320px;max-height:calc(100% - 100px);overflow-y:auto;padding:8px 10px;
   background:rgba(12,14,20,.78);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);border-radius:10px;
-  color:#fff;font:13px/1.35 Inter,system-ui,sans-serif;cursor:pointer;user-select:none;pointer-events:auto}
+  color:#fff;font:13px/1.35 Inter,system-ui,sans-serif;user-select:none;pointer-events:auto}
 .gamestats[hidden]{display:none}
-.gs-head{display:flex;justify-content:space-between;gap:10px;font-size:11px;opacity:.85;margin-bottom:4px}
+.gs-head{display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px;cursor:grab;touch-action:none}
+.gs-head .gs-league,.gs-head .gs-status{opacity:.85}.gs-head .gs-status{margin-left:auto}
+.gs-mini{display:none;font-weight:600;font-variant-numeric:tabular-nums}
+.gs-min-btn{width:22px;height:22px;padding:0;border:0;border-radius:5px;background:rgba(255,255,255,.1);color:#fff;font-size:14px;line-height:1;cursor:pointer}
+.gs-min-btn:hover{background:rgba(255,255,255,.22)}
+.gamestats.dragging{cursor:grabbing;opacity:.92}.gamestats.dragging .gs-head{cursor:grabbing}
+.gamestats.min{min-width:0;max-width:none;padding:4px 8px}
+.gamestats.min .gs-head{margin:0}.gamestats.min .gs-mini{display:inline}
+.gamestats.min .gs-body,.gamestats.min .gs-lineups{display:none}
 .gs-league{font-weight:700;letter-spacing:.04em}
 .gs-status.live{color:#ff6b6b;font-weight:700}
 .gs-row{display:flex;align-items:center;gap:6px;padding:2px 0}
@@ -246,12 +335,8 @@ const GameStats = {
 .gs-rec{font-size:11px;opacity:.55}
 .gs-score{min-width:28px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
 .gs-play{margin-top:5px;padding-top:5px;border-top:1px solid rgba(255,255,255,.12);font-size:11px;opacity:.8}
-.gamestats.collapsed{min-width:0}
-.gamestats.collapsed .gs-logo,.gamestats.collapsed .gs-rec,.gamestats.collapsed .gs-play,.gamestats.collapsed .gs-league{display:none}
-.gamestats.collapsed .gs-name{max-width:90px}
 .gs-lineups-btn{margin-top:6px;width:100%;padding:3px 0;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:11px;cursor:pointer}
 .gs-lineups-btn:hover{background:rgba(255,255,255,.16)}
-.gamestats.collapsed .gs-lineups-btn{display:none}
 .gs-lineups{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12);cursor:default;min-width:420px;user-select:text}
 .gs-lineups[hidden]{display:none}
 .gamestats:has(.gs-lineups:not([hidden])){max-width:min(520px,92vw)}
