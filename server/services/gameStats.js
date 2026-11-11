@@ -147,7 +147,7 @@ async function fetchLeague(league) {
 }
 
 async function lookup(title) {
-    title = String(title || '').slice(0, 200);
+    title = String(title || '').slice(0, 500);
     if (!looksLikeMatchup(title)) return null; // only titles that name two teams
     const sport = sportHint(title);
     const leagues = sport ? LEAGUES.filter((l) => l.sport === sport) : LEAGUES;

@@ -21,6 +21,8 @@ const GameStats = {
     playersAt: 0,
     seasonCache: {},
     min: false,
+    channel: null,
+    programs: new Map(), // channel name -> { title, desc } of its current EPG program (fed by the player)
     pos: null,        // { x, y } in px from the video container's top-left, or null = default corner
 
     init() {
@@ -28,34 +30,77 @@ const GameStats = {
             this.min = localStorage.getItem('gamestats-min') === '1';
             this.pos = JSON.parse(localStorage.getItem('gamestats-pos') || 'null');
         } catch (_) { /* storage unavailable: defaults */ }
+        // Learn each channel's current EPG program (e.g. "College Basketball : Creighton at Kansas State") by
+        // listening in on the player's updateNowPlaying, without modifying the player itself.
+        const VP = window.VideoPlayer;
+        if (VP && VP.prototype && !VP.prototype.__gsWrapped) {
+            const orig = VP.prototype.updateNowPlaying;
+            const self = this;
+            VP.prototype.updateNowPlaying = function (channel, epgData) {
+                const r = orig.apply(this, arguments);
+                try { self.onNowPlaying(channel, epgData); } catch (_) { /* overlay is optional */ }
+                return r;
+            };
+            VP.prototype.__gsWrapped = true;
+        }
         window.addEventListener('resize', () => this.applyPos());
         document.addEventListener('fullscreenchange', () => setTimeout(() => this.applyPos(), 50));
         this.injectStyles();
         window.addEventListener('channelChanged', (e) => this.setChannel(e.detail));
     },
 
+    onNowPlaying(channel, epgData) {
+        if (!channel) return;
+        const name = channel.name || channel.tvgName || '';
+        const cur = epgData && epgData.current;
+        const before = this.currentText();
+        this.programs.set(name, cur ? { title: cur.title || '', desc: cur.description || '' } : null);
+        if (this.channel && (this.channel.name || this.channel.tvgName || '') === name && this.currentText() !== before) this.tick();
+    },
+
+    // Text to look a game up by: channel name plus the current program's title and start of its description.
+    currentText() {
+        const ch = this.channel;
+        if (!ch) return '';
+        const name = ch.name || ch.tvgName || '';
+        let prog = null;
+        try { // the guide is the freshest source: the program changes while the channel stays tuned
+            const guide = window.app && window.app.epgGuide;
+            const p = guide && guide.getCurrentProgram && guide.getCurrentProgram(ch.tvgId, ch.name);
+            if (p) prog = { title: p.title, desc: p.desc };
+        } catch (_) { /* fall through */ }
+        if (!prog) prog = this.programs.get(name) || null;
+        return [name, prog && prog.title, prog && String(prog.desc || '').slice(0, 200)].filter(Boolean).join(' | ');
+    },
+
     setChannel(channel) {
         clearTimeout(this.timer);
         this.closeLineups();
         this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
-        this.title = (channel && (channel.name || channel.tvgName)) || '';
+        this.channel = channel || null;
+        this.title = '';
         this.render(null);
-        if (this.title) this.poll(this.title);
+        if (this.channel) this.tick();
     },
 
-    async poll(title) {
+    // One lookup cycle. Cheap when the text names no matchup (no network); keeps running for as long as the
+    // channel is tuned so a studio show turning into a game (or back) is picked up without a channel change.
+    async tick() {
+        clearTimeout(this.timer);
+        const channel = this.channel;
+        if (!channel) return;
+        const text = this.currentText();
+        this.title = text;
         let game = null;
-        try {
-            const res = await fetch('/api/gamestats?title=' + encodeURIComponent(title), { credentials: 'same-origin' });
-            if (res.ok) game = (await res.json()).game;
-        } catch (_) { /* overlay is optional; ignore */ }
-        if (title !== this.title) return; // channel changed while waiting
-        this.render(game);
-        // Keep refreshing while a game exists and isn't over; otherwise retry slowly (a game may start).
-        const done = game && game.state === 'post';
-        if (!done && /\s(@|at|vs\.?|v)\s/i.test(title)) {
-            this.timer = setTimeout(() => this.poll(title), game ? this.POLL_MS : this.RETRY_MS);
+        if (/\s(@|at|vs\.?|v)\s/i.test(text)) {
+            try {
+                const res = await fetch('/api/gamestats?title=' + encodeURIComponent(text), { credentials: 'same-origin' });
+                if (res.ok) game = (await res.json()).game;
+            } catch (_) { /* overlay is optional; ignore */ }
+            if (channel !== this.channel || text !== this.title) return; // channel/program changed while waiting
         }
+        this.render(game);
+        this.timer = setTimeout(() => this.tick(), game && game.state !== 'post' ? this.POLL_MS : this.RETRY_MS);
     },
 
     container() {

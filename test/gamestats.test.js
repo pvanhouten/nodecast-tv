@@ -146,3 +146,15 @@ test('lineups: hockey lists skaters and goalies by unit', () => {
     const [t] = gs.buildLineups(summary, 'hockey');
     assert.deepEqual(t.starters.map((p) => [p.unit, p.num, p.stat]), [['Forwards', '13', '1 G, 2 A'], ['Goalies', '39', '.903 SV%']]);
 });
+
+test('EPG program title with the matchup is enough (generic channel name)', () => {
+    const events = [ev(team('Kansas State', 'Wildcats'), team('Creighton', 'Bluejays')),
+                    ev(team('Kansas', 'Jayhawks'), team('Kentucky', 'Wildcats'))];
+    const text = 'Fox Sports 1 | College Basketball : Creighton at Kansas State \u1d38\u1da6\u1d5b\u1d49 | From Bramlage Coliseum in Mahnattan, Kan.';
+    const g = findGame(text, events, league);
+    assert.equal(g.home.name, 'Kansas State');
+    assert.equal(g.away.name, 'Creighton');
+    assert.equal(sportHint(text), 'basketball');
+    assert.equal(looksLikeMatchup(text), true);
+    assert.equal(findGame('Fox Sports 1 | The Herd with Colin Cowherd', events, league), null);
+});
