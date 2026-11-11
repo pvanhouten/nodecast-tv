@@ -244,3 +244,35 @@ test('soccer competitions are separate labelled feeds; league words route search
     assert.ok(keys.indexOf('soc-eng.1') < keys.indexOf('soccer'));
     assert.equal(keys[keys.length - 1], 'soccer');
 });
+
+test('team index narrows which leagues a lookup or search has to fetch', () => {
+    const mk = (...names) => gs.buildIndexEntry(names.map((n) => ({ location: n, displayName: n + ' X', shortDisplayName: n, abbreviation: n.slice(0, 3), name: 'X' })));
+    const index = new Map([
+        ['nba', mk('Miami', 'Utah', 'Boston')],
+        ['nfl', mk('Green Bay', 'Chicago', 'Miami')],
+        ['ncaam', mk('Wisconsin', 'Fairfield', 'Utah')],
+        ['soc-eng.1', mk('Arsenal', 'Chelsea')],
+        ['soc-eng.fa', mk('Arsenal', 'Luton')]
+    ]);
+    const keys = (title, pool = LEAGUES) => gs.candidateLeagues(title, pool, index).map((l) => l.key);
+    // both teams must exist in a league; unindexed leagues (e.g. ncaaw here) stay in play
+    const k1 = keys('Miami at Utah');
+    assert.ok(!k1.includes('ncaam') && !k1.includes('nfl') && k1.includes('nba')); // ncaam holds only Utah
+    // a recognised soccer team keeps the soccer catch-all; a recognised non-soccer pair drops it
+    assert.ok(keys('Arsenal vs Chelsea').includes('soccer'));
+    assert.ok(!keys('Miami at Utah').includes('soccer'));
+    // cup feeds only need one recognised club (lower-league opponents are not in their list)
+    assert.ok(keys('Arsenal v Nobodytown United').includes('soc-eng.fa'));
+    assert.ok(!keys('Arsenal v Nobodytown United').includes('soc-eng.1'));
+    // nothing recognised at all -> only the catch-all and unindexed leagues
+    const none = keys('Zzyzx vs Qwerty');
+    assert.ok(none.includes('soccer') && !none.includes('nba'));
+    // no index at all -> everything, exactly as before
+    assert.equal(gs.candidateLeagues('Miami at Utah', LEAGUES, new Map()).length, LEAGUES.length);
+    // manual search by names only
+    const sk = (toks) => gs.searchCandidates(toks, LEAGUES, index).map((l) => l.key);
+    assert.ok(sk(['wisc']).includes('ncaam') && !sk(['wisc']).includes('nba'));
+    assert.ok(sk(['miami']).includes('nba') && sk(['miami']).includes('nfl'));
+    assert.ok(!sk(['miami', 'utah']).includes('nfl')); // every token must start a team word in the league
+    assert.ok(!sk(['wisc']).includes('soccer'));
+});
