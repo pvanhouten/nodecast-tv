@@ -5,6 +5,8 @@
  * (e.g. "NCAAB 6 Fairfield @ Wisconsin 8PM"). Drag the header to move it (double-click the header to reset),
  * the "-" button minimizes it to a one-line score pill, and "Lineups" opens player names/numbers plus search.
  * Position and minimized state are remembered in localStorage.
+ * If no game is found automatically, hover the player and use the search button ("ncaa mens basketball wisconsin")
+ * to pick a game by hand; it stays pinned to that channel (8h) until you un-pin it.
  */
 const GameStats = {
     POLL_MS: 15000,
@@ -21,6 +23,10 @@ const GameStats = {
     playersAt: 0,
     seasonCache: {},
     min: false,
+    channel: null,
+    pinned: null,     // { leagueKey, id } chosen by hand for the current channel
+    finderTimer: null,
+    programs: new Map(), // channel name -> { title, desc } of its current EPG program (fed by the player)
     pos: null,        // { x, y } in px from the video container's top-left, or null = default corner
 
     init() {
@@ -28,34 +34,88 @@ const GameStats = {
             this.min = localStorage.getItem('gamestats-min') === '1';
             this.pos = JSON.parse(localStorage.getItem('gamestats-pos') || 'null');
         } catch (_) { /* storage unavailable: defaults */ }
+        // Learn each channel's current EPG program (e.g. "College Basketball : Creighton at Kansas State") by
+        // listening in on the player's updateNowPlaying, without modifying the player itself.
+        const VP = window.VideoPlayer;
+        if (VP && VP.prototype && !VP.prototype.__gsWrapped) {
+            const orig = VP.prototype.updateNowPlaying;
+            const self = this;
+            VP.prototype.updateNowPlaying = function (channel, epgData) {
+                const r = orig.apply(this, arguments);
+                try { self.onNowPlaying(channel, epgData); } catch (_) { /* overlay is optional */ }
+                return r;
+            };
+            VP.prototype.__gsWrapped = true;
+        }
         window.addEventListener('resize', () => this.applyPos());
         document.addEventListener('fullscreenchange', () => setTimeout(() => this.applyPos(), 50));
         this.injectStyles();
         window.addEventListener('channelChanged', (e) => this.setChannel(e.detail));
     },
 
+    onNowPlaying(channel, epgData) {
+        if (!channel) return;
+        const name = channel.name || channel.tvgName || '';
+        const cur = epgData && epgData.current;
+        const before = this.currentText();
+        this.programs.set(name, cur ? { title: cur.title || '', desc: cur.description || '' } : null);
+        if (this.channel && (this.channel.name || this.channel.tvgName || '') === name && this.currentText() !== before) this.tick();
+    },
+
+    // Text to look a game up by: channel name plus the current program's title and start of its description.
+    currentText() {
+        const ch = this.channel;
+        if (!ch) return '';
+        const name = ch.name || ch.tvgName || '';
+        let prog = null;
+        try { // the guide is the freshest source: the program changes while the channel stays tuned
+            const guide = window.app && window.app.epgGuide;
+            const p = guide && guide.getCurrentProgram && guide.getCurrentProgram(ch.tvgId, ch.name);
+            if (p) prog = { title: p.title, desc: p.desc };
+        } catch (_) { /* fall through */ }
+        if (!prog) prog = this.programs.get(name) || null;
+        return [name, prog && prog.title, prog && String(prog.desc || '').slice(0, 200)].filter(Boolean).join(' | ');
+    },
+
     setChannel(channel) {
         clearTimeout(this.timer);
         this.closeLineups();
         this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
-        this.title = (channel && (channel.name || channel.tvgName)) || '';
+        this.channel = channel || null;
+        this.pinned = this.loadPin();
+        this.shellGame = undefined; // fresh panels (finder/lineups) for a new channel
+        this.title = '';
+        this.closeFinder();
         this.render(null);
-        if (this.title) this.poll(this.title);
+        if (this.channel) this.tick();
     },
 
-    async poll(title) {
+    // One lookup cycle. Cheap when the text names no matchup (no network); keeps running for as long as the
+    // channel is tuned so a studio show turning into a game (or back) is picked up without a channel change.
+    async tick() {
+        clearTimeout(this.timer);
+        const channel = this.channel;
+        if (!channel) return;
+        const text = this.currentText();
+        this.title = text;
         let game = null;
-        try {
-            const res = await fetch('/api/gamestats?title=' + encodeURIComponent(title), { credentials: 'same-origin' });
-            if (res.ok) game = (await res.json()).game;
-        } catch (_) { /* overlay is optional; ignore */ }
-        if (title !== this.title) return; // channel changed while waiting
-        this.render(game);
-        // Keep refreshing while a game exists and isn't over; otherwise retry slowly (a game may start).
-        const done = game && game.state === 'post';
-        if (!done && /\s(@|at|vs\.?|v)\s/i.test(title)) {
-            this.timer = setTimeout(() => this.poll(title), game ? this.POLL_MS : this.RETRY_MS);
+        if (this.pinned) {
+            try {
+                const res = await fetch('/api/gamestats/game?league=' + encodeURIComponent(this.pinned.leagueKey) + '&event=' + encodeURIComponent(this.pinned.id), { credentials: 'same-origin' });
+                if (res.ok) game = (await res.json()).game;
+            } catch (_) { /* keep pin; try again next tick */ }
+            if (channel !== this.channel) return;
+            if (!game) { this.savePin(null); this.pinned = null; } // game dropped off the scoreboard: back to automatic
         }
+        if (!game && !this.pinned && /\s(@|at|vs\.?|v)\s/i.test(text)) {
+            try {
+                const res = await fetch('/api/gamestats?title=' + encodeURIComponent(text), { credentials: 'same-origin' });
+                if (res.ok) game = (await res.json()).game;
+            } catch (_) { /* overlay is optional; ignore */ }
+            if (channel !== this.channel || text !== this.title) return; // channel/program changed while waiting
+        }
+        this.render(game);
+        this.timer = setTimeout(() => this.tick(), game && game.state !== 'post' ? this.POLL_MS : this.RETRY_MS);
     },
 
     container() {
@@ -65,7 +125,7 @@ const GameStats = {
     render(game) {
         const host = this.container();
         if (!host) return;
-        if (!game) { if (this.el) this.el.hidden = true; return; }
+        if (!game && !this.channel) { if (this.el) this.el.hidden = true; return; }
         if (!this.el || !host.contains(this.el)) {
             this.el = document.createElement('div');
             this.el.className = 'gamestats';
@@ -73,27 +133,46 @@ const GameStats = {
             this.el.addEventListener('dblclick', (e) => e.stopPropagation());
             this.el.addEventListener('click', (e) => {
                 if (e.target.closest('.gs-min-btn')) { this.toggleMin(); return; }
+                if (e.target.closest('.gs-find-btn')) { this.toggleFinder(); return; }
+                if (e.target.closest('.gs-unpin-btn')) { this.unpin(); return; }
                 if (e.target.closest('.gs-lineups-btn')) this.toggleLineups();
             });
             this.bindDrag();
-            this.el.classList.toggle('min', this.min);
             host.appendChild(this.el);
             if (window.ResizeObserver) new ResizeObserver(() => this.applyPos()).observe(this.el);
         }
         this.el.hidden = false;
-        // The lineups panel (search box, results, columns) is built once per game and never re-rendered by a
-        // score refresh, otherwise the search box would lose focus/text every poll.
-        if (!this.game || this.game.id !== game.id || !this.el.querySelector('.gs-lineups')) {
+        const empty = !game;
+        this.el.classList.toggle('empty', empty);
+        this.el.classList.toggle('min', this.min && !empty);
+        // The finder and lineups panels (inputs, results) are built once per game and never re-rendered by a
+        // score refresh, otherwise the inputs would lose focus/text every poll.
+        const gid = game ? game.id : null;
+        if (!this.el.querySelector('.gs-lineups') || (this.shellGame !== gid)) {
             this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
             this.el.innerHTML = `<div class="gs-top"></div>
+                <div class="gs-finder" hidden>
+                  <input type="search" class="gs-fq" placeholder="Find game, e.g. ncaa mens basketball wisconsin" autocomplete="off" spellcheck="false">
+                  <div class="gs-fresults"></div></div>
                 <div class="gs-lineups" hidden>
                   <div class="gs-search"><input type="search" class="gs-q" placeholder="Find player: name or #" autocomplete="off" spellcheck="false">
                     <div class="gs-results"></div></div>
                   <div class="gs-cols"></div></div>`;
+            this.shellGame = gid;
             this.bindSearch();
+            this.bindFinder();
             this.lineupsOpen = false;
+            this.finderOpen = false;
             clearTimeout(this.lineupTimer);
         }
+        const findBtn = '<button type="button" class="gs-find-btn" title="Find a game">\u{1F50D}</button>';
+        if (empty) {
+            this.el.querySelector('.gs-top').innerHTML = `<div class="gs-head" title="Drag to move"><span class="gs-league">Find a game</span>${findBtn}</div>`;
+            this.el.classList.toggle('open', !!this.finderOpen);
+            this.applyPos();
+            return;
+        }
+        this.el.classList.remove('open');
         const row = (t) => `
             <div class="gs-row${t.winner ? ' win' : ''}">
               ${t.logo ? `<img class="gs-logo" src="${this.esc(t.logo)}" alt="" referrerpolicy="no-referrer">` : ''}
@@ -108,6 +187,8 @@ const GameStats = {
             <div class="gs-head" title="Drag to move \u00b7 double-click to reset"><span class="gs-league">${this.esc(game.league)}</span>
               <span class="gs-mini">${this.esc(game.away.abbr || game.away.name)} ${this.esc(game.away.score)}\u2013${this.esc(game.home.score)} ${this.esc(game.home.abbr || game.home.name)}</span>
               <span class="gs-status${live ? ' live' : ''}">${this.esc(game.detail)}</span>
+              ${this.pinned ? '<button type="button" class="gs-unpin-btn" title="Pinned by hand \u00b7 click to go back to automatic">\u{1F4CC}</button>' : ''}
+              ${findBtn}
               <button type="button" class="gs-min-btn" title="${this.min ? 'Expand' : 'Minimize'}">${this.min ? '+' : '\u2013'}</button></div>
             <div class="gs-body">
               ${row(game.away)}${row(game.home)}
@@ -115,6 +196,84 @@ const GameStats = {
               ${canLineup ? `<button type="button" class="gs-lineups-btn">${this.lineupsOpen ? 'Hide lineups' : 'Lineups'}</button>` : ''}
             </div>`;
         this.applyPos();
+    },
+
+    // ---- Manual game search / pin ----
+    loadPin() {
+        try {
+            const all = JSON.parse(localStorage.getItem('gamestats-pins') || '{}');
+            const name = this.channel && (this.channel.name || this.channel.tvgName);
+            const p = name && all[name];
+            return p && Date.now() - p.at < 8 * 3600 * 1000 ? { leagueKey: p.leagueKey, id: p.id } : null;
+        } catch (_) { return null; }
+    },
+
+    savePin(pin) {
+        try {
+            const name = this.channel && (this.channel.name || this.channel.tvgName);
+            if (!name) return;
+            const all = JSON.parse(localStorage.getItem('gamestats-pins') || '{}');
+            for (const k of Object.keys(all)) if (Date.now() - all[k].at > 8 * 3600 * 1000) delete all[k];
+            if (pin) all[name] = { leagueKey: pin.leagueKey, id: pin.id, at: Date.now() }; else delete all[name];
+            localStorage.setItem('gamestats-pins', JSON.stringify(all));
+        } catch (_) { /* storage unavailable: pin lasts until the channel changes */ }
+    },
+
+    pin(game) {
+        this.pinned = { leagueKey: game.leagueKey, id: game.id };
+        this.savePin(this.pinned);
+        this.finderOpen = false;
+        this.render(game);          // rebuilds the shell for the new game (closes the finder)
+        this.tick();
+    },
+
+    unpin() {
+        this.pinned = null;
+        this.savePin(null);
+        this.tick();
+    },
+
+    toggleFinder() {
+        this.finderOpen = !this.finderOpen;
+        const box = this.el.querySelector('.gs-finder');
+        if (box) box.hidden = !this.finderOpen;
+        this.el.classList.toggle('open', !!this.finderOpen);
+        if (this.finderOpen) { const i = this.el.querySelector('.gs-fq'); if (i) i.focus(); }
+    },
+
+    closeFinder() {
+        this.finderOpen = false;
+        if (this.el) {
+            const box = this.el.querySelector('.gs-finder');
+            if (box) box.hidden = true;
+            this.el.classList.remove('open');
+        }
+    },
+
+    bindFinder() {
+        const input = this.el.querySelector('.gs-fq');
+        if (!input) return;
+        ['keydown', 'keyup', 'keypress'].forEach((ev) => input.addEventListener(ev, (e) => e.stopPropagation()));
+        const run = async () => {
+            const out = this.el && this.el.querySelector('.gs-fresults');
+            const q = input.value.trim();
+            if (!out) return;
+            if (q.length < 2) { out.innerHTML = ''; return; }
+            let games = [];
+            try {
+                const res = await fetch('/api/gamestats/search?q=' + encodeURIComponent(q), { credentials: 'same-origin' });
+                if (res.ok) games = (await res.json()).games || [];
+            } catch (_) { /* optional */ }
+            if (!out.isConnected || input.value.trim() !== q) return;
+            this.finderGames = games;
+            out.innerHTML = games.length ? games.map((g, i) => `<button type="button" class="gs-fhit" data-i="${i}">
+                <span class="gs-fstate ${g.state === 'in' ? 'live' : ''}">${g.state === 'in' ? 'LIVE' : g.state === 'post' ? 'FINAL' : 'SOON'}</span>
+                <span class="gs-fname">${this.esc(g.away.name)} ${g.state === 'pre' ? 'at' : this.esc(g.away.score) + '\u2013' + this.esc(g.home.score)} ${this.esc(g.home.name)}</span>
+                <em>${this.esc(g.league)} \u00b7 ${this.esc(g.detail)}</em></button>`).join('') : '<div class="gs-empty">No games found</div>';
+            out.querySelectorAll('.gs-fhit').forEach((b) => b.addEventListener('click', () => this.pin(this.finderGames[+b.dataset.i])));
+        };
+        input.addEventListener('input', () => { clearTimeout(this.finderTimer); this.finderTimer = setTimeout(run, 250); });
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(this.finderTimer); run(); } });
     },
 
     toggleMin() {
@@ -321,6 +480,20 @@ const GameStats = {
 .gs-mini{display:none;font-weight:600;font-variant-numeric:tabular-nums}
 .gs-min-btn{width:22px;height:22px;padding:0;border:0;border-radius:5px;background:rgba(255,255,255,.1);color:#fff;font-size:14px;line-height:1;cursor:pointer}
 .gs-min-btn:hover{background:rgba(255,255,255,.22)}
+.gs-find-btn,.gs-unpin-btn{width:22px;height:22px;padding:0;border:0;border-radius:5px;background:rgba(255,255,255,.1);color:#fff;font-size:11px;line-height:1;cursor:pointer}
+.gs-find-btn:hover,.gs-unpin-btn:hover{background:rgba(255,255,255,.22)}
+.gs-unpin-btn{background:rgba(91,217,140,.25)}
+.gs-finder{margin-top:6px;cursor:default;user-select:text}.gs-finder[hidden]{display:none}
+.gs-fq{width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:12px}
+.gs-fhit{display:flex;align-items:baseline;gap:6px;width:100%;margin-top:3px;padding:4px 6px;border:0;border-radius:5px;background:rgba(255,255,255,.07);color:#fff;font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.gs-fhit:hover{background:rgba(255,255,255,.16)}
+.gs-fstate{font-size:9px;font-weight:700;letter-spacing:.05em;opacity:.7;min-width:34px}.gs-fstate.live{color:#ff6b6b;opacity:1}
+.gs-fname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gs-fhit em{font-style:normal;font-size:10px;opacity:.55;white-space:nowrap}
+.gamestats.empty{min-width:0;max-width:min(420px,92vw);padding:4px 8px;opacity:0;pointer-events:none;transition:opacity .2s}
+#video-container:hover .gamestats.empty,.video-container:hover .gamestats.empty,.gamestats.empty.open{opacity:1;pointer-events:auto}
+.gamestats.empty.open{min-width:320px}
+.gamestats.empty .gs-head{margin:0}.gamestats.empty .gs-lineups{display:none}
+@media (hover:none){.gamestats.empty{opacity:.5;pointer-events:auto}}
 .gamestats.dragging{cursor:grabbing;opacity:.92}.gamestats.dragging .gs-head{cursor:grabbing}
 .gamestats.min{min-width:0;max-width:none;padding:4px 8px}
 .gamestats.min .gs-head{margin:0}.gamestats.min .gs-mini{display:inline}

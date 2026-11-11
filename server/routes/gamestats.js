@@ -55,4 +55,27 @@ router.get('/season', async (req, res) => {
     }
 });
 
+/** GET /api/gamestats/search?q=ncaa mens basketball wisconsin -> { games: [...] } (live first) */
+router.get('/search', async (req, res) => {
+    try {
+        const games = await gameStats.search(String(req.query.q || '').slice(0, 120));
+        res.set('Cache-Control', 'no-store');
+        res.json({ games });
+    } catch (err) {
+        console.error('[GameStats] search failed:', err.message);
+        res.json({ games: [] });
+    }
+});
+
+/** GET /api/gamestats/game?league=&event= -> { game } for a manually pinned game */
+router.get('/game', async (req, res) => {
+    try {
+        const game = await gameStats.gameById(String(req.query.league || ''), String(req.query.event || ''));
+        res.set('Cache-Control', 'no-store');
+        res.json({ game });
+    } catch (err) {
+        res.json({ game: null });
+    }
+});
+
 module.exports = router;

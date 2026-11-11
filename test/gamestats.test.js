@@ -146,3 +146,44 @@ test('lineups: hockey lists skaters and goalies by unit', () => {
     const [t] = gs.buildLineups(summary, 'hockey');
     assert.deepEqual(t.starters.map((p) => [p.unit, p.num, p.stat]), [['Forwards', '13', '1 G, 2 A'], ['Goalies', '39', '.903 SV%']]);
 });
+
+test('EPG program title with the matchup is enough (generic channel name)', () => {
+    const events = [ev(team('Kansas State', 'Wildcats'), team('Creighton', 'Bluejays')),
+                    ev(team('Kansas', 'Jayhawks'), team('Kentucky', 'Wildcats'))];
+    const text = 'Fox Sports 1 | College Basketball : Creighton at Kansas State \u1d38\u1da6\u1d5b\u1d49 | From Bramlage Coliseum in Mahnattan, Kan.';
+    const g = findGame(text, events, league);
+    assert.equal(g.home.name, 'Kansas State');
+    assert.equal(g.away.name, 'Creighton');
+    assert.equal(sportHint(text), 'basketball');
+    assert.equal(looksLikeMatchup(text), true);
+    assert.equal(findGame('Fox Sports 1 | The Herd with Colin Cowherd', events, league), null);
+});
+
+test('manual search: league words pick the league, the rest must match team names', () => {
+    let q = gs.parseQuery('ncaa mens basketball wisconsin');
+    assert.deepEqual(q.leagues.map((l) => l.key), ['ncaam']);
+    assert.deepEqual(q.teamTokens, ['wisconsin']);
+    q = gs.parseQuery("NCAA men's basketball Wisc");
+    assert.deepEqual(q.leagues.map((l) => l.key), ['ncaam']);
+    assert.deepEqual(q.teamTokens, ['wisc']);
+    q = gs.parseQuery('womens soccer duke');
+    assert.deepEqual(q.leagues.map((l) => l.key), ['ncaa-soccer-w']);
+    q = gs.parseQuery('wisconsin');
+    assert.equal(q.leagues.length, LEAGUES.length);          // no league words: search everything
+    assert.deepEqual(q.teamTokens, ['wisconsin']);
+    q = gs.parseQuery('nba');
+    assert.deepEqual([q.leagues.map((l) => l.key), q.teamTokens], [['nba'], []]);
+});
+
+test('manual search: events filtered by prefix-matching team words', () => {
+    const events = [ev(team('Wisconsin', 'Badgers'), team('Fairfield', 'Stags')), ev(team('Purdue', 'Boilermakers'), team('Iowa', 'Hawkeyes'))];
+    assert.equal(gs.filterEvents(['wisc'], events).length, 1);
+    assert.equal(gs.filterEvents(['wisconsin', 'fairfield'], events).length, 1);
+    assert.equal(gs.filterEvents(['wisconsin', 'iowa'], events).length, 0);
+    assert.equal(gs.filterEvents([], events).length, 2);
+});
+
+test('manual search/pin: bad league or event id rejected', async () => {
+    assert.equal(await gs.gameById('nope', '1'), null);
+    assert.equal(await gs.gameById('nfl', '1;x'), null);
+});
