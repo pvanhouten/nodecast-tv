@@ -160,6 +160,69 @@ async function lookup(title) {
     return best ? best.game : null;
 }
 
+// ---- Manual game search ("ncaa mens basketball wisconsin") --------------------------------------------
+// Words that name a league. The leagues sharing the most words with the query are searched; the remaining
+// words must each prefix-match a word of a team's name.
+const LEAGUE_WORDS = {
+    ncaam: 'ncaa ncaab college mens men basketball ncaam cbb',
+    ncaaw: 'ncaa ncaaw college womens women basketball wbb',
+    nba: 'nba basketball',
+    ncaaf: 'ncaa ncaaf college football cfb',
+    nfl: 'nfl football',
+    nhl: 'nhl hockey',
+    mlb: 'mlb baseball',
+    soccer: 'soccer football epl premier league laliga liga bundesliga serie ligue champions uefa europa mls',
+    'ncaa-soccer-m': 'ncaa college mens men soccer',
+    'ncaa-soccer-w': 'ncaa college womens women soccer'
+};
+const SEARCH_STOP = new Set(['vs', 'v', 'at', 'the', 'game', 'live', 'and', 'of', 'a']);
+
+// Pure: which leagues to search and which tokens must match team names.
+function parseQuery(query) {
+    const tokens = normalize(query).split(' ').filter((t) => t.length > 1 && !SEARCH_STOP.has(t)).slice(0, 8);
+    const words = (l) => new Set((LEAGUE_WORDS[l.key] || '').split(' '));
+    const scored = LEAGUES.map((l) => ({ l, k: tokens.filter((t) => words(l).has(t)).length }));
+    const maxK = scored.length ? Math.max(...scored.map((x) => x.k)) : 0;
+    const leagues = scored.filter((x) => x.k === maxK).map((x) => x.l);
+    const kw = new Set(maxK > 0 ? leagues.flatMap((l) => [...words(l)]) : []);
+    return { leagues, teamTokens: tokens.filter((t) => !kw.has(t)), hadLeagueWords: maxK > 0 };
+}
+
+// Pure: events where every token starts a word in one of the two teams' names.
+function filterEvents(teamTokens, events) {
+    return (events || []).filter((e) => {
+        const comps = e.competitions?.[0]?.competitors || [];
+        if (comps.length !== 2) return false;
+        const words = comps.flatMap((c) => [c.team?.location, c.team?.displayName, c.team?.shortDisplayName, c.team?.abbreviation, c.team?.name])
+            .flatMap((n) => normalize(n).split(' ')).filter(Boolean);
+        return teamTokens.every((t) => words.some((w) => w.startsWith(t)));
+    });
+}
+
+async function search(query) {
+    const { leagues, teamTokens, hadLeagueWords } = parseQuery(query);
+    if (!teamTokens.length && !hadLeagueWords) return [];
+    const lists = await Promise.all(leagues.map((l) => fetchLeague(l)));
+    const out = [];
+    leagues.forEach((league, i) => {
+        for (const e of filterEvents(teamTokens, lists[i])) {
+            const g = summarize(e, league);
+            if (g) out.push(g);
+        }
+    });
+    const rank = { in: 0, pre: 1, post: 2 };
+    out.sort((a, b) => (rank[a.state] ?? 3) - (rank[b.state] ?? 3));
+    return out.slice(0, 12);
+}
+
+// Refresh one pinned game (from the cached scoreboard) by league + event id.
+async function gameById(leagueKey, eventId) {
+    const league = LEAGUES.find((l) => l.key === leagueKey);
+    if (!league || !/^\d{1,20}$/.test(String(eventId))) return null;
+    const event = (await fetchLeague(league)).find((e) => String(e.id) === String(eventId));
+    return event ? summarize(event, league) : null;
+}
+
 // ---- Lineups -------------------------------------------------------------------------------------
 const LINEUP_CACHE_MS = 30_000;
 const lineupCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
@@ -386,4 +449,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
