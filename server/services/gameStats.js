@@ -91,6 +91,8 @@ function summarize(event, league) {
     const type = event.status?.type || {};
     const situation = comp.situation || {};
     return {
+        id: String(event.id || ''),
+        leagueKey: league.key,
         league: league.label,
         state: type.state || 'pre', // pre | in | post
         detail: type.shortDetail || type.detail || '',
@@ -158,4 +160,70 @@ async function lookup(title) {
     return best ? best.game : null;
 }
 
-module.exports = { lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+// ---- Lineups -------------------------------------------------------------------------------------
+const LINEUP_CACHE_MS = 30_000;
+const lineupCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
+
+function soccerTeams(summary) {
+    return (summary.rosters || []).map((r) => ({
+        homeAway: r.homeAway,
+        name: r.team?.shortDisplayName || r.team?.displayName || '',
+        formation: r.formation || '',
+        starters: (r.roster || []).filter((p) => p.starter).sort((a, b) => (a.formationPlace || 99) - (b.formationPlace || 99))
+            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', out: !!p.subbedOut })),
+        bench: (r.roster || []).filter((p) => !p.starter)
+            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', in: !!p.subbedIn }))
+    }));
+}
+
+function basketballTeams(summary) {
+    return (summary.boxscore?.players || []).map((t) => {
+        const block = t.statistics?.[0] || {};
+        const labels = block.labels || [];
+        const idx = (l) => labels.indexOf(l);
+        const stat = (p) => {
+            const st = p.stats || [];
+            const pts = st[idx('PTS')], reb = st[idx('REB')], ast = st[idx('AST')];
+            return pts == null ? '' : `${pts} pts` + (reb && reb !== '0' ? `, ${reb} reb` : '') + (ast && ast !== '0' ? `, ${ast} ast` : '');
+        };
+        const row = (p) => ({ num: p.athlete?.jersey || '', name: p.athlete?.displayName || '', pos: p.athlete?.position?.abbreviation || '', stat: stat(p) });
+        const all = block.athletes || [];
+        return {
+            homeAway: summary.header?.competitions?.[0]?.competitors?.find((c) => c.id === t.team?.id)?.homeAway || '',
+            name: t.team?.shortDisplayName || t.team?.displayName || '',
+            formation: '',
+            starters: all.filter((p) => p.starter).map(row),
+            bench: all.filter((p) => !p.starter && !p.didNotPlay).map(row)
+        };
+    });
+}
+
+// Pure (exported for tests): turn an ESPN summary into [{ name, formation, starters[], bench[] }].
+function buildLineups(summary, sport) {
+    if (sport === 'soccer') return soccerTeams(summary);
+    if (sport === 'basketball') return basketballTeams(summary);
+    return [];
+}
+
+async function lineups(leagueKey, eventId) {
+    const league = LEAGUES.find((l) => l.key === leagueKey);
+    if (!league || !/^\d{1,20}$/.test(String(eventId))) return null; // only known leagues, numeric ids
+    const key = `${league.key}:${eventId}`;
+    const hit = lineupCache.get(key);
+    if (hit && Date.now() - hit.at < LINEUP_CACHE_MS) return hit.promise;
+    const url = `https://site.api.espn.com/apis/site/v2/sports/${league.path}/summary?event=${eventId}`;
+    const entry = { at: Date.now(), promise: null };
+    entry.promise = fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then((d) => ({ sport: league.sport, teams: buildLineups(d, league.sport) }))
+        .catch((err) => {
+            lineupCache.delete(key);
+            console.warn(`[GameStats] lineups ${key} failed: ${err.message}`);
+            return null;
+        });
+    lineupCache.set(key, entry);
+    if (lineupCache.size > 200) lineupCache.delete(lineupCache.keys().next().value);
+    return entry.promise;
+}
+
+module.exports = { lineups, buildLineups, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };

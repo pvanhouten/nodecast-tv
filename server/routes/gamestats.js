@@ -17,4 +17,19 @@ router.get('/', async (req, res) => {
     }
 });
 
+/**
+ * GET /api/gamestats/lineups?league=<key>&event=<id>
+ * Returns { lineups: { sport, teams: [...] } } or { lineups: null }.
+ */
+router.get('/lineups', async (req, res) => {
+    try {
+        const lineups = await gameStats.lineups(String(req.query.league || ''), String(req.query.event || ''));
+        res.set('Cache-Control', 'no-store');
+        res.json({ lineups });
+    } catch (err) {
+        console.error('[GameStats] lineups failed:', err.message);
+        res.json({ lineups: null });
+    }
+});
+
 module.exports = router;

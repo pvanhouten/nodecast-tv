@@ -77,3 +77,30 @@ test('sport hints keep a soccer title out of basketball', () => {
     assert.equal(sportHint('(CA) Dazn 03: Basketball Champions League: A vs B'), 'basketball');
     assert.equal(sportHint('Arsenal vs Chelsea'), null);
 });
+
+test('lineups: soccer starters ordered by formation place, subs flagged', () => {
+    const r = (homeAway, name, players) => ({ homeAway, formation: '4-3-3', team: { shortDisplayName: name }, roster: players });
+    const pl = (jersey, n, starter, place, extra = {}) => ({ jersey, starter, formationPlace: place, athlete: { displayName: n }, position: { abbreviation: starter ? 'X' : 'SUB' }, ...extra });
+    const out = gs.buildLineups({ rosters: [r('home', 'PSG', [pl('9', 'Striker', true, 9), pl('1', 'Keeper', true, 1, { subbedOut: true }), pl('20', 'Sub', false, 0, { subbedIn: true })])] }, 'soccer');
+    assert.equal(out[0].formation, '4-3-3');
+    assert.deepEqual(out[0].starters.map((p) => p.num), ['1', '9']);
+    assert.equal(out[0].starters[0].out, true);
+    assert.equal(out[0].bench[0].in, true);
+});
+
+test('lineups: basketball starters/bench with stat line; DNP hidden', () => {
+    const a = (n, num, starter, st, dnp = false) => ({ starter, didNotPlay: dnp, stats: st, athlete: { displayName: n, jersey: num, position: { abbreviation: 'G' } } });
+    const summary = { header: { competitions: [{ competitors: [{ id: '7', homeAway: 'home' }] }] },
+        boxscore: { players: [{ team: { id: '7', shortDisplayName: 'Wisconsin' }, statistics: [{ labels: ['MIN', 'PTS', 'REB', 'AST'], athletes: [
+            a('Starter', '3', true, ['30', '14', '6', '3']), a('Bench', '11', false, ['5', '2', '0', '0']), a('Idle', '99', false, [], true)] }] }] } };
+    const [t] = gs.buildLineups(summary, 'basketball');
+    assert.equal(t.homeAway, 'home');
+    assert.equal(t.starters[0].stat, '14 pts, 6 reb, 3 ast');
+    assert.deepEqual(t.bench.map((p) => p.name), ['Bench']);
+});
+
+test('lineups: unsupported sports return nothing; bad ids/leagues rejected', async () => {
+    assert.deepEqual(gs.buildLineups({}, 'hockey'), []);
+    assert.equal(await gs.lineups('../etc', '1'), null);
+    assert.equal(await gs.lineups('soccer', '1/../../x'), null);
+});
