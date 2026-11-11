@@ -78,4 +78,15 @@ router.get('/game', async (req, res) => {
     }
 });
 
+/** GET /api/gamestats/extra?league=&event= -> { extra: { winProb, spread, teamStats } | null } */
+router.get('/extra', async (req, res) => {
+    try {
+        const extra = await gameStats.extra(String(req.query.league || ''), String(req.query.event || ''));
+        res.set('Cache-Control', 'no-store');
+        res.json({ extra });
+    } catch (err) {
+        res.json({ extra: null });
+    }
+});
+
 module.exports = router;

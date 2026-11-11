@@ -3,18 +3,42 @@
 // and returns a compact score summary. Self-contained: no dependencies beyond global fetch.
 // ESPN's public scoreboard JSON is unofficial and keyless; every failure degrades to "no match".
 
+const SOC = 'soccer football';
 const LEAGUES = [
-    { key: 'ncaam', sport: 'basketball', label: 'NCAAB', path: 'basketball/mens-college-basketball', query: 'groups=50&limit=400' },
-    { key: 'ncaaw', sport: 'basketball', label: 'NCAAW', path: 'basketball/womens-college-basketball', query: 'groups=50&limit=400' },
-    { key: 'nba', sport: 'basketball', label: 'NBA', path: 'basketball/nba', query: '' },
-    { key: 'ncaaf', sport: 'football', label: 'NCAAF', path: 'football/college-football', query: 'groups=80&limit=400' },
-    { key: 'nfl', sport: 'football', label: 'NFL', path: 'football/nfl', query: '' },
-    { key: 'nhl', sport: 'hockey', label: 'NHL', path: 'hockey/nhl', query: '' },
-    { key: 'mlb', sport: 'baseball', label: 'MLB', path: 'baseball/mlb', query: '' },
-    // ESPN's soccer/all aggregates every league (Premier League, La Liga, Champions League, Liga MX, ...)
-    { key: 'soccer', sport: 'soccer', label: 'Soccer', path: 'soccer/all', query: 'limit=500' },
-    { key: 'ncaa-soccer-m', sport: 'soccer', label: 'NCAA Soccer', path: 'soccer/usa.ncaa.m.1', query: 'limit=500' },
-    { key: 'ncaa-soccer-w', sport: 'soccer', label: 'NCAA Soccer', path: 'soccer/usa.ncaa.w.1', query: 'limit=500' }
+    { key: 'ncaam', sport: 'basketball', label: 'NCAAB', path: 'basketball/mens-college-basketball', query: 'groups=50&limit=400', words: 'ncaa ncaab college mens men basketball ncaam cbb' },
+    { key: 'ncaaw', sport: 'basketball', label: 'NCAAW', path: 'basketball/womens-college-basketball', query: 'groups=50&limit=400', words: 'ncaa ncaaw college womens women basketball wbb' },
+    { key: 'nba', sport: 'basketball', label: 'NBA', path: 'basketball/nba', query: '', words: 'nba basketball' },
+    { key: 'ncaaf', sport: 'football', label: 'NCAAF', path: 'football/college-football', query: 'groups=80&limit=400', words: 'ncaa ncaaf college football cfb' },
+    { key: 'nfl', sport: 'football', label: 'NFL', path: 'football/nfl', query: '', words: 'nfl football' },
+    { key: 'nhl', sport: 'hockey', label: 'NHL', path: 'hockey/nhl', query: '', words: 'nhl hockey' },
+    { key: 'mlb', sport: 'baseball', label: 'MLB', path: 'baseball/mlb', query: '', words: 'mlb baseball' },
+    // One feed per competition so games carry a real label. Order matters: on a tie the earlier feed wins.
+    ...[
+        ['eng.1', 'Premier League', 'premier league epl english england'],
+        ['esp.1', 'La Liga', 'laliga liga spanish spain'],
+        ['ger.1', 'Bundesliga', 'bundesliga german germany'],
+        ['ita.1', 'Serie A', 'serie seriea italian italy'],
+        ['fra.1', 'Ligue 1', 'ligue ligue1 french france'],
+        ['uefa.champions', 'Champions League', 'champions league ucl uefa'],
+        ['uefa.europa', 'Europa League', 'europa league uel uefa'],
+        ['uefa.europa.conf', 'Conference League', 'conference league uecl uefa'],
+        ['eng.2', 'Championship', 'championship efl english england'],
+        ['eng.fa', 'FA Cup', 'fa cup english england'],
+        ['eng.league_cup', 'League Cup', 'carabao league cup efl english england'],
+        ['ned.1', 'Eredivisie', 'eredivisie dutch netherlands holland'],
+        ['por.1', 'Primeira Liga', 'primeira liga portuguese portugal'],
+        ['sco.1', 'Scottish Premiership', 'scottish scotland spfl premiership'],
+        ['tur.1', 'Super Lig', 'turkish turkey super lig'],
+        ['bel.1', 'Pro League', 'belgian belgium pro league'],
+        ['usa.1', 'MLS', 'mls'],
+        ['mex.1', 'Liga MX', 'liga ligamx mx mexican mexico'],
+        ['bra.1', 'Brasileirao', 'brazilian brazil brasileirao serie'],
+        ['arg.1', 'Liga Profesional', 'argentine argentina liga profesional']
+    ].map(([slug, label, words]) => ({ key: 'soc-' + slug, sport: 'soccer', label, path: 'soccer/' + slug, query: '', words: `${SOC} ${words}` })),
+    { key: 'ncaa-soccer-m', sport: 'soccer', label: 'NCAA Soccer', path: 'soccer/usa.ncaa.m.1', query: 'limit=500', words: `ncaa college mens men ${SOC}` },
+    { key: 'ncaa-soccer-w', sport: 'soccer', label: 'NCAA Soccer', path: 'soccer/usa.ncaa.w.1', query: 'limit=500', words: `ncaa college womens women ${SOC}` },
+    // Everything else ESPN lists as soccer (other leagues, women's leagues, ...); last so labelled feeds win ties.
+    { key: 'soccer', sport: 'soccer', label: 'Soccer', path: 'soccer/all', query: 'limit=500', words: SOC }
 ];
 
 // If the title says which sport it is, only search that sport (stops "Georgia vs South Carolina Soccer"
@@ -68,7 +92,44 @@ function teamScore(title, team) {
     return best;
 }
 
-function summarize(event, league) {
+// Short "what is happening right now" line (NFL down & distance, MLB count/runners). Best effort: absent fields
+// just shorten the line, and ESPN only sends it while a game is live.
+function buildSituation(comp, sport, teamAbbr) {
+    const s = comp.situation;
+    if (!s) return '';
+    if (sport === 'football') {
+        const parts = [];
+        if (s.possession) parts.push(`${teamAbbr(s.possession)} ball`);
+        const dd = s.downDistanceText || s.shortDownDistanceText;
+        if (dd) parts.push(dd);
+        if (s.isRedZone) parts.push('Red zone');
+        return parts.filter(Boolean).join(' \u00b7 ');
+    }
+    if (sport === 'baseball') {
+        const parts = [];
+        if (s.balls != null && s.strikes != null) parts.push(`${s.balls}-${s.strikes}`);
+        if (s.outs != null) parts.push(`${s.outs} out`);
+        const r = [s.onFirst && '1st', s.onSecond && '2nd', s.onThird && '3rd'].filter(Boolean);
+        parts.push(r.length === 3 ? 'bases loaded' : r.length ? `runners on ${r.join(', ')}` : 'bases empty');
+        const name = (x) => x?.athlete?.shortName || x?.athlete?.displayName || '';
+        if (name(s.batter)) parts.push(`AB: ${name(s.batter)}`);
+        if (name(s.pitcher)) parts.push(`P: ${name(s.pitcher)}`);
+        return parts.join(' \u00b7 ');
+    }
+    return '';
+}
+
+// Goals and cards so far (soccer scoreboard "details"), oldest first, last 8.
+function soccerEvents(comp, teamAbbr) {
+    return (comp.details || []).filter((d) => d.scoringPlay || d.yellowCard || d.redCard).map((d) => ({
+        min: d.clock?.displayValue || '',
+        kind: d.redCard ? 'red' : d.yellowCard ? 'yellow' : d.ownGoal ? 'og' : d.penaltyKick ? 'pen' : 'goal',
+        player: d.athletesInvolved?.[0]?.displayName || '',
+        team: teamAbbr(d.team?.id)
+    })).slice(-8);
+}
+
+function summarize(event, league, meta) {
     const comp = event.competitions?.[0];
     if (!comp) return null;
     const side = (homeAway) => {
@@ -89,18 +150,24 @@ function summarize(event, league) {
     const home = side('home');
     if (!away || !home) return null;
     const type = event.status?.type || {};
-    const situation = comp.situation || {};
+    const lastPlaySrc = comp.situation || {};
+    const teamAbbr = (id) => comp.competitors?.find((c) => String(c.team?.id) === String(id))?.team?.abbreviation || '';
     return {
         id: String(event.id || ''),
         leagueKey: league.key,
         league: league.label,
+        sport: league.sport,
+        asOf: meta?.asOf || Date.now(),
+        stale: !!meta?.stale,
+        situation: type.state === 'in' ? buildSituation(comp, league.sport, teamAbbr) : '',
+        events: league.sport === 'soccer' ? soccerEvents(comp, teamAbbr) : [],
         state: type.state || 'pre', // pre | in | post
         detail: type.shortDetail || type.detail || '',
         period: event.status?.period ?? null,
         clock: event.status?.displayClock || '',
         away,
         home,
-        lastPlay: situation.lastPlay?.text || '',
+        lastPlay: lastPlaySrc.lastPlay?.text || '',
         broadcast: comp.broadcasts?.[0]?.names?.[0] || '',
         link: event.links?.find((l) => l.rel?.includes('summary'))?.href || event.links?.[0]?.href || null
     };
@@ -120,12 +187,21 @@ function findGame(title, events, league) {
         const score = a + b;
         if (!best || score > best.score) best = { score, event };
     }
-    const game = best ? summarize(best.event, league) : null;
+    const game = best ? summarize(best.event, league, events && { asOf: events.asOf, stale: events.stale }) : null;
     return game ? { game, score: best.score } : null;
 }
 
 function looksLikeMatchup(title) {
     return /\s(@|at|vs\.?|v)\s/i.test(String(title || ''));
+}
+
+const lastGood = new Map(); // league key -> { at, events }: served (flagged stale) if ESPN fails later
+
+function withMeta(events, at, stale) {
+    const a = events.slice();
+    a.asOf = at;
+    a.stale = stale;
+    return a;
 }
 
 async function fetchLeague(league) {
@@ -136,11 +212,16 @@ async function fetchLeague(league) {
     const entry = { at: now, ttl: CACHE_MS, promise: null };
     entry.promise = fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((d) => d.events || [])
+        .then((d) => {
+            const events = d.events || [];
+            lastGood.set(league.key, { at: Date.now(), events });
+            return withMeta(events, Date.now(), false);
+        })
         .catch((err) => {
             entry.ttl = FAIL_CACHE_MS;
             console.warn(`[GameStats] ${league.key} scoreboard failed: ${err.message}`);
-            return [];
+            const g = lastGood.get(league.key);
+            return g ? withMeta(g.events, g.at, true) : withMeta([], 0, true);
         });
     cache.set(league.key, entry);
     return entry.promise;
@@ -161,26 +242,14 @@ async function lookup(title) {
 }
 
 // ---- Manual game search ("ncaa mens basketball wisconsin") --------------------------------------------
-// Words that name a league. The leagues sharing the most words with the query are searched; the remaining
-// words must each prefix-match a word of a team's name.
-const LEAGUE_WORDS = {
-    ncaam: 'ncaa ncaab college mens men basketball ncaam cbb',
-    ncaaw: 'ncaa ncaaw college womens women basketball wbb',
-    nba: 'nba basketball',
-    ncaaf: 'ncaa ncaaf college football cfb',
-    nfl: 'nfl football',
-    nhl: 'nhl hockey',
-    mlb: 'mlb baseball',
-    soccer: 'soccer football epl premier league laliga liga bundesliga serie ligue champions uefa europa mls',
-    'ncaa-soccer-m': 'ncaa college mens men soccer',
-    'ncaa-soccer-w': 'ncaa college womens women soccer'
-};
+// Each league lists words that name it (LEAGUES[].words). The leagues sharing the most words with the query are
+// searched; the remaining words must each prefix-match a word of a team's name.
 const SEARCH_STOP = new Set(['vs', 'v', 'at', 'the', 'game', 'live', 'and', 'of', 'a']);
 
 // Pure: which leagues to search and which tokens must match team names.
 function parseQuery(query) {
     const tokens = normalize(query).split(' ').filter((t) => t.length > 1 && !SEARCH_STOP.has(t)).slice(0, 8);
-    const words = (l) => new Set((LEAGUE_WORDS[l.key] || '').split(' '));
+    const words = (l) => new Set((l.words || '').split(' '));
     const scored = LEAGUES.map((l) => ({ l, k: tokens.filter((t) => words(l).has(t)).length }));
     const maxK = scored.length ? Math.max(...scored.map((x) => x.k)) : 0;
     const leagues = scored.filter((x) => x.k === maxK).map((x) => x.l);
@@ -204,10 +273,11 @@ async function search(query) {
     if (!teamTokens.length && !hadLeagueWords) return [];
     const lists = await Promise.all(leagues.map((l) => fetchLeague(l)));
     const out = [];
+    const seen = new Set();
     leagues.forEach((league, i) => {
         for (const e of filterEvents(teamTokens, lists[i])) {
-            const g = summarize(e, league);
-            if (g) out.push(g);
+            const g = summarize(e, league, { asOf: lists[i].asOf, stale: lists[i].stale });
+            if (g && !seen.has(g.id)) { seen.add(g.id); out.push(g); } // labelled feeds come first, soccer/all dupes dropped
         }
     });
     const rank = { in: 0, pre: 1, post: 2 };
@@ -219,8 +289,9 @@ async function search(query) {
 async function gameById(leagueKey, eventId) {
     const league = LEAGUES.find((l) => l.key === leagueKey);
     if (!league || !/^\d{1,20}$/.test(String(eventId))) return null;
-    const event = (await fetchLeague(league)).find((e) => String(e.id) === String(eventId));
-    return event ? summarize(event, league) : null;
+    const events = await fetchLeague(league);
+    const event = events.find((e) => String(e.id) === String(eventId));
+    return event ? summarize(event, league, { asOf: events.asOf, stale: events.stale }) : null;
 }
 
 // ---- Lineups -------------------------------------------------------------------------------------
@@ -399,6 +470,63 @@ async function lineups(leagueKey, eventId) {
     return entry.promise;
 }
 
+// ---- Win probability, spread and team stats (from the game summary) ---------------------------------------
+const STAT_SETS = {
+    basketball: [['fieldGoalPct', 'FG%'], ['threePointFieldGoalPct', '3P%'], ['freeThrowPct', 'FT%'], ['totalRebounds', 'REB'], ['assists', 'AST'], ['turnovers', 'TO'], ['steals', 'STL'], ['blocks', 'BLK']],
+    football: [['totalYards', 'Total yds'], ['netPassingYards', 'Pass yds'], ['rushingYards', 'Rush yds'], ['firstDowns', '1st downs'], ['thirdDownEff', '3rd down'], ['turnovers', 'Turnovers'], ['possessionTime', 'Possession']],
+    hockey: [['shotsTotal', 'Shots'], ['hits', 'Hits'], ['blockedShots', 'Blocks'], ['powerPlayGoals', 'PP goals'], ['faceoffPercent', 'FO%'], ['takeaways', 'Takeaways'], ['giveaways', 'Giveaways']],
+    soccer: [['possessionPct', 'Possession'], ['totalShots', 'Shots'], ['shotsOnTarget', 'On target'], ['wonCorners', 'Corners'], ['foulsCommitted', 'Fouls'], ['yellowCards', 'Yellow'], ['redCards', 'Red'], ['offsides', 'Offsides'], ['saves', 'Saves']]
+};
+
+// Pure: { winProb, spread, teamStats } from an ESPN summary. Anything missing is null.
+function buildExtra(summary, sport) {
+    let winProb = null;
+    const wp = summary.winprobability;
+    if (Array.isArray(wp) && wp.length) {
+        const last = wp[wp.length - 1];
+        if (typeof last.homeWinPercentage === 'number') {
+            const home = last.homeWinPercentage, tie = last.tiePercentage || 0;
+            winProb = { home, away: Math.max(0, 1 - home - tie) };
+        }
+    }
+    const pc = summary.pickcenter?.[0];
+    const spread = pc && (pc.details || pc.overUnder != null) ? { text: pc.details || '', overUnder: pc.overUnder ?? null } : null;
+
+    let teamStats = null;
+    const set = STAT_SETS[sport];
+    const teams = summary.boxscore?.teams || [];
+    if (set && teams.length === 2) {
+        const away = teams.find((t) => t.homeAway === 'away') || teams[0];
+        const home = teams.find((t) => t.homeAway === 'home') || teams[1];
+        const get = (t, name) => (t.statistics || []).find((x) => x.name === name);
+        const fmt = (name, st) => {
+            const v = st?.displayValue;
+            if (v == null || v === '') return null;
+            return /Pct$|Percent$/.test(name) && !String(v).includes('%') ? v + '%' : v;
+        };
+        const rows = set.map(([name, label]) => ({ label, away: fmt(name, get(away, name)), home: fmt(name, get(home, name)) }))
+            .filter((r) => r.away != null && r.home != null);
+        if (rows.length) teamStats = { away: away.team?.abbreviation || away.team?.shortDisplayName || '', home: home.team?.abbreviation || home.team?.shortDisplayName || '', rows };
+    }
+    return { winProb, spread, teamStats };
+}
+
+const extraCache = new Map();
+async function extra(leagueKey, eventId) {
+    const league = LEAGUES.find((l) => l.key === leagueKey);
+    if (!league || !/^\d{1,20}$/.test(String(eventId))) return null;
+    const key = `${league.key}:${eventId}`;
+    const hit = extraCache.get(key);
+    if (hit && Date.now() - hit.at < LINEUP_CACHE_MS) return hit.promise;
+    const entry = { at: Date.now(), promise: null };
+    entry.promise = getJson(`https://site.api.espn.com/apis/site/v2/sports/${league.path}/summary?event=${eventId}`)
+        .then((d) => buildExtra(d, league.sport))
+        .catch((err) => { extraCache.delete(key); console.warn(`[GameStats] extra ${key} failed: ${err.message}`); return null; });
+    extraCache.set(key, entry);
+    if (extraCache.size > 100) extraCache.delete(extraCache.keys().next().value);
+    return entry.promise;
+}
+
 // ---- Player search + season stats -----------------------------------------------------------------
 const playersCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
 const seasonCache = new Map();  // `${leagueKey}:${athleteId}` -> { at, promise }
@@ -449,4 +577,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
