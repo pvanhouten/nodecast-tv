@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const gameStats = require('../services/gameStats');
 
+gameStats.startTeamIndex(); // warm the team -> league index so lookups only fetch the leagues that can match
+
 /**
  * GET /api/gamestats?title=NCAAB 6 Fairfield @ Wisconsin 8PM
  * Returns { game: {...} } or { game: null }. Viewer-level (mounted behind requireAuth).

@@ -79,8 +79,7 @@ const GENERIC = new Set(['united', 'city', 'real', 'sporting', 'athletic', 'club
 
 // How well a team matches the (normalized) title: full-name hits score by name length;
 // otherwise a distinctive word of the name ("bayern" for "FC Bayern" vs "Bayern Munich") scores half.
-function teamScore(title, team) {
-    const names = [team.location, team.displayName, team.shortDisplayName].map(normalize).filter(Boolean);
+function nameScore(title, names) {
     let best = 0;
     for (const n of names) if (n.length >= 3 && hasWords(title, n)) best = Math.max(best, n.length);
     if (best) return best;
@@ -90,6 +89,9 @@ function teamScore(title, team) {
         }
     }
     return best;
+}
+function teamScore(title, team) {
+    return nameScore(title, [team.location, team.displayName, team.shortDisplayName].map(normalize).filter(Boolean));
 }
 
 // Short "what is happening right now" line (NFL down & distance, MLB count/runners). Best effort: absent fields
@@ -227,11 +229,182 @@ async function fetchLeague(league) {
     return entry.promise;
 }
 
+// ---- Team index ---------------------------------------------------------------------------------------
+// ESPN lists each feed's teams once (/teams). Loaded at startup and refreshed daily, it tells us which
+// leagues a pair of team names can possibly belong to, so a lookup fetches a handful of scoreboards
+// instead of every feed. A feed with no index (soccer/all, or one whose list failed to load) is always searched,
+// and with no index at all everything is searched, exactly as before.
+const TEAM_INDEX_REFRESH_MS = 24 * 60 * 60_000;
+const TEAM_INDEX_RETRY_MS = 2 * 60_000;
+const teamIndex = new Map(); // league key -> { teams: [{ names }], words: Set<string> }
+// Cup feeds list far fewer clubs than they play (lower-league sides), so one recognised team is enough.
+const LOOSE_LEAGUES = new Set(['soc-eng.fa', 'soc-eng.league_cup']);
+const NO_TEAM_LIST = new Set(['soccer']); // ESPN has no /teams for the soccer/all catch-all
+
+function buildIndexEntry(teams) {
+    const out = { teams: [], words: new Set() };
+    for (const t of teams || []) {
+        const names = [t.location, t.displayName, t.shortDisplayName].map(normalize).filter(Boolean);
+        if (!names.length) continue;
+        out.teams.push({ names });
+        for (const n of [...names, normalize(t.abbreviation), normalize(t.name)]) for (const w of n.split(' ')) if (w) out.words.add(w);
+    }
+    return out.teams.length ? out : null;
+}
+
+// Pure: of `pool`, the leagues whose team list holds at least two teams named in the title (one for cup feeds),
+// plus every league without an index.
+function candidateLeagues(title, pool, index) {
+    const t = normalize(title);
+    const matched = [];
+    const open = []; // leagues we cannot rule out
+    for (const l of pool) {
+        const entry = index.get(l.key);
+        if (!entry) { open.push(l); continue; }
+        const need = LOOSE_LEAGUES.has(l.key) ? 1 : 2;
+        let hits = 0;
+        for (const team of entry.teams) {
+            if (nameScore(t, team.names) > 0 && ++hits >= need) { matched.push(l); break; }
+        }
+    }
+    // The soccer catch-all only matters when a soccer team was recognised, or nothing was recognised at all.
+    const keep = open.filter((l) => !NO_TEAM_LIST.has(l.key) || !matched.length || matched.some((m) => m.sport === l.sport));
+    return pool.filter((l) => matched.includes(l) || keep.includes(l));
+}
+
+// Pure: for a manual search without league words, the leagues where every typed token starts a team word.
+function searchCandidates(teamTokens, pool, index) {
+    if (!teamTokens.length) return pool;
+    const matched = [];
+    const open = [];
+    for (const l of pool) {
+        const entry = index.get(l.key);
+        if (!entry) { open.push(l); continue; }
+        const hit = (tok) => { for (const w of entry.words) if (w.startsWith(tok)) return true; return false; };
+        if (LOOSE_LEAGUES.has(l.key) ? teamTokens.some(hit) : teamTokens.every(hit)) matched.push(l);
+    }
+    const keep = open.filter((l) => !NO_TEAM_LIST.has(l.key) || !matched.length || matched.some((m) => m.sport === l.sport));
+    return pool.filter((l) => matched.includes(l) || keep.includes(l));
+}
+
+async function loadTeams(league) {
+    const q = league.query.replace(/limit=\d+/, '').replace(/&&/g, '&').replace(/^&|&$/g, '');
+    const url = `https://site.api.espn.com/apis/site/v2/sports/${league.path}/teams?${q ? q + '&' : ''}limit=1000`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS * 2) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    return (d.sports?.[0]?.leagues?.[0]?.teams || []).map((x) => x.team).filter(Boolean);
+}
+
+let teamIndexTimer = null;
+async function refreshTeamIndex() {
+    const queue = LEAGUES.filter((l) => !NO_TEAM_LIST.has(l.key));
+    const worker = async () => {
+        for (let l = queue.shift(); l; l = queue.shift()) {
+            try {
+                const entry = buildIndexEntry(await loadTeams(l));
+                if (entry) teamIndex.set(l.key, entry);
+            } catch (err) {
+                console.warn(`[GameStats] team list ${l.key} failed: ${err.message}`);
+            }
+        }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+    console.log(`[GameStats] team index: ${teamIndex.size}/${LEAGUES.length} leagues`);
+    // retry sooner if any list failed to load
+    const missing = LEAGUES.filter((l) => !NO_TEAM_LIST.has(l.key) && !teamIndex.has(l.key)).length;
+    teamIndexTimer = setTimeout(refreshTeamIndex, missing ? TEAM_INDEX_RETRY_MS : TEAM_INDEX_REFRESH_MS);
+    teamIndexTimer.unref?.();
+}
+function startTeamIndex() {
+    if (teamIndexTimer) return;
+    teamIndexTimer = setTimeout(() => {}, 0);
+    refreshTeamIndex().catch((err) => console.warn('[GameStats] team index failed:', err.message));
+}
+
+// ---- Single-team lookup ("Wrexham", "Wrexham FA Cup", "Arsenal | Champions League") -----------------
+// No matchup in the text: if the channel name or program title is just one known team plus optional hint words
+// (league / sport / "live" / "FC" ...), show that team's live game, else its nearest one. Anything else in the
+// segment ("Boston News Tonight") disqualifies it, so a city or nickname in ordinary text cannot trigger a lookup.
+const NOISE_WORDS = new Set('live hd fhd uhd sd tv game match matches channel stream sports sport fc afc cf sc ac club official et pt ct mt est pst cst'.split(' '));
+const ALL_LEAGUE_WORDS = new Set(LEAGUES.flatMap((l) => l.words.split(' ')));
+const isFiller = (w) => NOISE_WORDS.has(w) || ALL_LEAGUE_WORDS.has(w) || /^\d{1,4}(am|pm)?$/.test(w);
+
+// Pure: { name, keys } where keys are the league feeds (in LEAGUES order) the team plays in and the hints allow.
+function singleTeamLeagues(title, index) {
+    const segments = String(title || '').split('|').slice(0, 2); // channel name, program title; never the description
+    for (const seg of segments) {
+        const t = normalize(seg);
+        if (!t || t.split(' ').length > 8) continue;
+        let best = '';
+        const byName = new Map(); // matched name -> league keys
+        for (const [key, entry] of index) {
+            for (const team of entry.teams) {
+                for (const n of team.names) {
+                    if (n.length < 4 || !hasWords(t, n)) continue;
+                    if (!byName.has(n)) byName.set(n, new Set());
+                    byName.get(n).add(key);
+                    if (n.length > best.length) best = n;
+                }
+            }
+        }
+        if (!best) continue;
+        const leftover = ` ${t} `.replace(` ${best} `, ' ').trim().split(' ').filter(Boolean);
+        if (!leftover.every(isFiller)) continue;
+        // A sibling segment made only of filler ("NCAA mens basketball") adds its words as hints.
+        const extra = segments.filter((o) => o !== seg).flatMap((o) => normalize(o).split(' ').filter(Boolean));
+        const hints = [...leftover, ...(extra.length && extra.every(isFiller) ? extra : [])].filter((w) => ALL_LEAGUE_WORDS.has(w));
+        // Cup feeds list only some clubs, so a hint naming one may add it even if the team list lacks the club.
+        const listed = byName.get(best);
+        let keys = LEAGUES.map((l) => l.key).filter((k) => listed.has(k) || (hints.length && LOOSE_LEAGUES.has(k)));
+        // Hints (league / sport words) narrow the feeds; if none of the team's feeds fits the hints there is no match.
+        if (hints.length) {
+            const score = (k) => hints.filter((h) => LEAGUES.find((l) => l.key === k).words.split(' ').includes(h)).length;
+            const top = Math.max(0, ...keys.map(score));
+            keys = top ? keys.filter((k) => score(k) === top) : [];
+        }
+        if (keys.length) return { name: best, keys };
+    }
+    return null;
+}
+
+// Pure: the best game for a team among events: live first, then the one nearest in time.
+function pickTeamGame(name, events, now = Date.now()) {
+    let best = null;
+    for (const event of events || []) {
+        const comps = event.competitions?.[0]?.competitors || [];
+        if (!comps.some((c) => [c.team?.location, c.team?.displayName, c.team?.shortDisplayName].map(normalize).includes(name))) continue;
+        const live = event.status?.type?.state === 'in';
+        const dist = Math.abs(Date.parse(event.date) - now) || 0;
+        const rank = live ? -1 : dist;
+        if (!best || rank < best.rank) best = { rank, event };
+    }
+    return best ? best.event : null;
+}
+
+async function lookupSingle(title) {
+    if (!teamIndex.size) return null; // without the team list a bare word could be anything
+    const hit = singleTeamLeagues(title, teamIndex);
+    if (!hit) return null;
+    const leagues = LEAGUES.filter((l) => hit.keys.includes(l.key));
+    const lists = await Promise.all(leagues.map((l) => fetchLeague(l)));
+    let best = null;
+    leagues.forEach((league, i) => {
+        const event = pickTeamGame(hit.name, lists[i]);
+        if (!event) return;
+        const live = event.status?.type?.state === 'in';
+        const rank = live ? -1 : Math.abs(Date.parse(event.date) - Date.now()) || 0;
+        if (!best || rank < best.rank) best = { rank, event, league, events: lists[i] };
+    });
+    return best ? summarize(best.event, best.league, { asOf: best.events.asOf, stale: best.events.stale }) : null;
+}
+
 async function lookup(title) {
     title = String(title || '').slice(0, 500);
-    if (!looksLikeMatchup(title)) return null; // only titles that name two teams
+    if (!looksLikeMatchup(title)) return lookupSingle(title); // a single team name, or nothing
     const sport = sportHint(title);
-    const leagues = sport ? LEAGUES.filter((l) => l.sport === sport) : LEAGUES;
+    const pool = sport ? LEAGUES.filter((l) => l.sport === sport) : LEAGUES;
+    const leagues = candidateLeagues(title, pool, teamIndex);
     const lists = await Promise.all(leagues.map((l) => fetchLeague(l)));
     let best = null;
     leagues.forEach((league, i) => {
@@ -269,8 +442,10 @@ function filterEvents(teamTokens, events) {
 }
 
 async function search(query) {
-    const { leagues, teamTokens, hadLeagueWords } = parseQuery(query);
+    let { leagues, teamTokens, hadLeagueWords } = parseQuery(query);
     if (!teamTokens.length && !hadLeagueWords) return [];
+    // Names only (no league words): every feed is a candidate, so use the team index to cut that down.
+    if (!hadLeagueWords) leagues = searchCandidates(teamTokens, leagues, teamIndex);
     const lists = await Promise.all(leagues.map((l) => fetchLeague(l)));
     const out = [];
     const seen = new Set();
@@ -577,4 +752,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
