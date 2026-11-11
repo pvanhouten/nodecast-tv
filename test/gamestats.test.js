@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { findGame, looksLikeMatchup, normalize, LEAGUES } = require('../server/services/gameStats');
+const gs = require('../server/services/gameStats');
+const { looksLikeMatchup, normalize, sportHint, LEAGUES } = gs;
+const findGame = (...a) => gs.findGame(...a)?.game ?? null;
 
 const team = (location, name, extra = {}) => ({
     homeAway: extra.homeAway, score: extra.score ?? '0',
@@ -51,4 +53,27 @@ test('empty slots and non-matchups are ignored', () => {
     assert.equal(looksLikeMatchup('Wisconsin vs. Purdue (2026-11-21)'), true);
     assert.equal(findGame('NCAAB 34', [ev(team('Wisconsin', 'Badgers'), team('Fairfield', 'Stags'))], league), null);
     assert.equal(normalize('Texas A&M'), 'texas a and m');
+});
+
+test('soccer: abbreviations, FC prefixes and diacritics still match', () => {
+    const soccer = LEAGUES.find((l) => l.key === 'soccer');
+    const t2 = (loc, short, disp) => ({ location: loc, displayName: disp || loc, shortDisplayName: short || loc });
+    const mk = (h, a) => ({ competitions: [{ competitors: [{ homeAway: 'home', score: '1', team: h }, { homeAway: 'away', score: '2', team: a }] }], status: { type: { state: 'in', shortDetail: "67'" } } });
+    const events = [
+        mk(t2('Paris Saint-Germain', 'PSG'), t2('Bayern Munich', 'Bayern Munich')),
+        mk(t2('Real Madrid'), t2('Paris FC'))
+    ];
+    const g = findGame('US (ESPN+ 046) | Soccer: PSG vs. FC Bayern (ESP) (PSG vs. FC Bayern (ESP)) (2026-11-10 14:45:10)', events, soccer);
+    assert.equal(g.home.name, 'PSG');
+    assert.equal(g.detail, "67'");
+    assert.ok(findGame('Soccer: Real Madrid vs. Paris FC (ESP)', events, soccer));
+    assert.equal(normalize('Bayern M\u00fcnchen'), 'bayern munchen');
+    assert.equal(normalize('Man Utd'), 'manchester united');
+});
+
+test('sport hints keep a soccer title out of basketball', () => {
+    assert.equal(sportHint('US (ESPN+ 191) | Soccer: Arkansas vs. Kentucky'), 'soccer');
+    assert.equal(sportHint('NCAAB 6 Fairfield @ Wisconsin 8PM'), 'basketball');
+    assert.equal(sportHint('(CA) Dazn 03: Basketball Champions League: A vs B'), 'basketball');
+    assert.equal(sportHint('Arsenal vs Chelsea'), null);
 });

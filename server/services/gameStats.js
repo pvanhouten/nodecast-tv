@@ -4,22 +4,45 @@
 // ESPN's public scoreboard JSON is unofficial and keyless; every failure degrades to "no match".
 
 const LEAGUES = [
-    { key: 'ncaam', label: 'NCAAB', path: 'basketball/mens-college-basketball', query: 'groups=50&limit=400' },
-    { key: 'ncaaw', label: 'NCAAW', path: 'basketball/womens-college-basketball', query: 'groups=50&limit=400' },
-    { key: 'ncaaf', label: 'NCAAF', path: 'football/college-football', query: 'groups=80&limit=400' },
-    { key: 'nfl', label: 'NFL', path: 'football/nfl', query: '' },
-    { key: 'nba', label: 'NBA', path: 'basketball/nba', query: '' },
-    { key: 'nhl', label: 'NHL', path: 'hockey/nhl', query: '' },
-    { key: 'mlb', label: 'MLB', path: 'baseball/mlb', query: '' }
+    { key: 'ncaam', sport: 'basketball', label: 'NCAAB', path: 'basketball/mens-college-basketball', query: 'groups=50&limit=400' },
+    { key: 'ncaaw', sport: 'basketball', label: 'NCAAW', path: 'basketball/womens-college-basketball', query: 'groups=50&limit=400' },
+    { key: 'nba', sport: 'basketball', label: 'NBA', path: 'basketball/nba', query: '' },
+    { key: 'ncaaf', sport: 'football', label: 'NCAAF', path: 'football/college-football', query: 'groups=80&limit=400' },
+    { key: 'nfl', sport: 'football', label: 'NFL', path: 'football/nfl', query: '' },
+    { key: 'nhl', sport: 'hockey', label: 'NHL', path: 'hockey/nhl', query: '' },
+    { key: 'mlb', sport: 'baseball', label: 'MLB', path: 'baseball/mlb', query: '' },
+    // ESPN's soccer/all aggregates every league (Premier League, La Liga, Champions League, Liga MX, ...)
+    { key: 'soccer', sport: 'soccer', label: 'Soccer', path: 'soccer/all', query: 'limit=500' },
+    { key: 'ncaa-soccer-m', sport: 'soccer', label: 'NCAA Soccer', path: 'soccer/usa.ncaa.m.1', query: 'limit=500' },
+    { key: 'ncaa-soccer-w', sport: 'soccer', label: 'NCAA Soccer', path: 'soccer/usa.ncaa.w.1', query: 'limit=500' }
 ];
+
+// If the title says which sport it is, only search that sport (stops "Georgia vs South Carolina Soccer"
+// matching a basketball game on the same day).
+const SPORT_HINTS = [
+    ['basketball', /\b(ncaab|ncaaw|basketball|nba|wnba)\b/i],
+    ['football', /\b(ncaaf|nfl|college football)\b/i],
+    ['hockey', /\b(nhl|hockey)\b/i],
+    ['baseball', /\b(mlb|baseball)\b/i],
+    // soccer last: "Basketball Champions League" must resolve to basketball first
+    ['soccer', /\b(soccer|epl|premier league|la ?liga|bundesliga|serie a|ligue 1|champions league|europa|uefa|mls|liga mx)\b/i]
+];
+function sportHint(title) {
+    const hit = SPORT_HINTS.find(([, re]) => re.test(title));
+    return hit ? hit[0] : null;
+}
 
 const CACHE_MS = 10_000;
 const FAIL_CACHE_MS = 5_000;
 const FETCH_TIMEOUT_MS = 6_000;
 const cache = new Map(); // league key -> { at, ttl, promise }
 
+const ALIASES = [[/\butd\b/g, 'united'], [/\bspurs\b/g, 'tottenham'], [/\bman\b/g, 'manchester']];
 function normalize(s) {
-    return String(s || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+    let n = String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+        .replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+    for (const [re, to] of ALIASES) n = n.replace(re, to);
+    return n;
 }
 
 function hasWords(haystack, needle) {
@@ -27,12 +50,20 @@ function hasWords(haystack, needle) {
     return ` ${haystack} `.includes(` ${needle} `);
 }
 
-// Length of the best name for this team found in the (normalized) title, or 0.
+// Words too generic to identify a club on their own.
+const GENERIC = new Set(['united', 'city', 'real', 'sporting', 'athletic', 'club', 'state', 'football', 'women', 'womens', 'university', 'college', 'national', 'royal', 'saint', 'north', 'south', 'east', 'west']);
+
+// How well a team matches the (normalized) title: full-name hits score by name length;
+// otherwise a distinctive word of the name ("bayern" for "FC Bayern" vs "Bayern Munich") scores half.
 function teamScore(title, team) {
+    const names = [team.location, team.displayName, team.shortDisplayName].map(normalize).filter(Boolean);
     let best = 0;
-    for (const raw of [team.location, team.displayName, team.shortDisplayName]) {
-        const n = normalize(raw);
-        if (n.length >= 3 && hasWords(title, n)) best = Math.max(best, n.length);
+    for (const n of names) if (n.length >= 3 && hasWords(title, n)) best = Math.max(best, n.length);
+    if (best) return best;
+    for (const n of names) {
+        for (const w of n.split(' ')) {
+            if (w.length >= 5 && !GENERIC.has(w) && hasWords(title, w)) best = Math.max(best, w.length / 2);
+        }
     }
     return best;
 }
@@ -87,7 +118,8 @@ function findGame(title, events, league) {
         const score = a + b;
         if (!best || score > best.score) best = { score, event };
     }
-    return best ? summarize(best.event, league) : null;
+    const game = best ? summarize(best.event, league) : null;
+    return game ? { game, score: best.score } : null;
 }
 
 function looksLikeMatchup(title) {
@@ -115,13 +147,15 @@ async function fetchLeague(league) {
 async function lookup(title) {
     title = String(title || '').slice(0, 200);
     if (!looksLikeMatchup(title)) return null; // only titles that name two teams
-    const lists = await Promise.all(LEAGUES.map((l) => fetchLeague(l)));
+    const sport = sportHint(title);
+    const leagues = sport ? LEAGUES.filter((l) => l.sport === sport) : LEAGUES;
+    const lists = await Promise.all(leagues.map((l) => fetchLeague(l)));
     let best = null;
-    LEAGUES.forEach((league, i) => {
+    leagues.forEach((league, i) => {
         const g = findGame(title, lists[i], league);
-        if (g) best = best || g; // leagues are ordered; first hit wins
+        if (g && (!best || g.score > best.score)) best = g;
     });
-    return best;
+    return best ? best.game : null;
 }
 
-module.exports = { lookup, findGame, normalize, looksLikeMatchup, LEAGUES };
+module.exports = { lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
