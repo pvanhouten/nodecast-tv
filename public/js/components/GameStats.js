@@ -155,7 +155,7 @@ const GameStats = {
         if (this.channel) this.tick();
     },
 
-    // One lookup cycle. Cheap when the text names no matchup (no network); keeps running for as long as the
+    // One lookup cycle. Cheap when the text names no known team (no ESPN traffic server-side); keeps running for as long as the
     // channel is tuned so a studio show turning into a game (or back) is picked up without a channel change.
     async tick() {
         clearTimeout(this.timer);
@@ -173,7 +173,7 @@ const GameStats = {
             if (channel !== this.channel) return;
             if (!game && !failed) { this.savePin(null); this.pinned = null; } // dropped off the scoreboard: back to automatic
         }
-        if (!game && !failed && !this.pinned && /\s(@|at|vs\.?|v)\s/i.test(text)) {
+        if (!game && !failed && !this.pinned && text) { // the server decides: a matchup, or one known team name
             try {
                 const res = await fetch('/api/gamestats?title=' + encodeURIComponent(text), { credentials: 'same-origin' });
                 if (res.ok) game = (await res.json()).game; else failed = true;

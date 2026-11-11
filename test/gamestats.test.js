@@ -276,3 +276,41 @@ test('team index narrows which leagues a lookup or search has to fetch', () => {
     assert.ok(!sk(['miami', 'utah']).includes('nfl')); // every token must start a team word in the league
     assert.ok(!sk(['wisc']).includes('soccer'));
 });
+
+test('single team name (plus optional hints) resolves to leagues; ordinary text does not', () => {
+    const mk = (...names) => gs.buildIndexEntry(names.map((n) => ({ location: n, displayName: n + ' X', shortDisplayName: n, abbreviation: n.slice(0, 3), name: 'X' })));
+    const index = new Map([
+        ['nba', mk('Miami', 'Utah')],
+        ['nfl', mk('Miami', 'Chicago')],
+        ['soc-eng.2', mk('Wrexham', 'Leeds')],
+        ['soc-eng.league_cup', mk('Wrexham')],
+        ['soc-eng.fa', mk('Arsenal')]
+    ]);
+    const one = (t) => gs.singleTeamLeagues(t, index);
+    assert.deepEqual(one('Wrexham'), { name: 'wrexham', keys: ['soc-eng.2', 'soc-eng.league_cup'] });
+    assert.equal(one('Wrexham AFC | Live').name, 'wrexham'); // filler words are fine
+    assert.deepEqual(one('Wrexham | Championship').keys, ['soc-eng.2']); // hint in the same text or the other segment
+    assert.deepEqual(one('Wrexham | League Cup').keys, ['soc-eng.league_cup']);
+    assert.deepEqual(one('Miami NBA').keys, ['nba']);
+    assert.deepEqual(one('Miami').keys, ['nba', 'nfl']); // ambiguous without a hint: every feed it plays in
+    // cup hint adds a cup feed even when its (partial) team list lacks the club
+    assert.deepEqual(one('Wrexham FA Cup').keys, ['soc-eng.fa']);
+    // hint contradicting the team's feeds, or ordinary words around a city name: no match
+    assert.equal(one('Wrexham NBA'), null);
+    assert.equal(one('Miami Vice Marathon'), null);
+    assert.equal(one('CNN | Miami Weather Report'), null);
+    // the description (third segment) is never used
+    assert.equal(one('Cooking Show | Dinner at 8 | Tonight Miami joins us'), null);
+    assert.equal(one(''), null);
+});
+
+test('team game pick: live first, otherwise nearest in time', () => {
+    const now = Date.parse('2026-11-11T12:00:00Z');
+    const e = (state, date, home = 'Wrexham') => ({ date, status: { type: { state } }, competitions: [{ competitors: [{ team: { location: home, displayName: home } }, { team: { location: 'Other', displayName: 'Other' } }] }] });
+    const live = e('in', '2026-11-11T11:00:00Z');
+    const nearFinal = e('post', '2026-11-11T09:00:00Z');
+    const farPre = e('pre', '2026-11-14T15:00:00Z');
+    assert.equal(gs.pickTeamGame('wrexham', [farPre, nearFinal, live], now), live);
+    assert.equal(gs.pickTeamGame('wrexham', [farPre, nearFinal], now), nearFinal);
+    assert.equal(gs.pickTeamGame('wrexham', [e('in', '2026-11-11T11:00:00Z', 'Leeds')], now), null);
+});
