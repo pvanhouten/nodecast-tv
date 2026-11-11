@@ -187,3 +187,60 @@ test('manual search/pin: bad league or event id rejected', async () => {
     assert.equal(await gs.gameById('nope', '1'), null);
     assert.equal(await gs.gameById('nfl', '1;x'), null);
 });
+
+test('situation: NFL down & distance + possession; MLB count/outs/runners; nothing when absent', () => {
+    const comp = { competitors: [{ team: { id: '1', abbreviation: 'BAL' } }, { team: { id: '2', abbreviation: 'JAX' } }] };
+    const abbr = (id) => comp.competitors.find((c) => c.team.id === id)?.team.abbreviation || '';
+    assert.equal(gs.buildSituation({ situation: { possession: '1', downDistanceText: '2nd & 7 at JAX 35', isRedZone: false } }, 'football', abbr), 'BAL ball · 2nd & 7 at JAX 35');
+    assert.equal(gs.buildSituation({ situation: { possession: '2', shortDownDistanceText: '1st & 10', isRedZone: true } }, 'football', abbr), 'JAX ball · 1st & 10 · Red zone');
+    assert.equal(gs.buildSituation({ situation: { balls: 2, strikes: 1, outs: 1, onFirst: true, onThird: true, batter: { athlete: { shortName: 'J. Chourio' } } } }, 'baseball', abbr),
+        '2-1 · 1 out · runners on 1st, 3rd · AB: J. Chourio');
+    assert.equal(gs.buildSituation({ situation: { balls: 0, strikes: 0, outs: 0, onFirst: true, onSecond: true, onThird: true } }, 'baseball', abbr), '0-0 · 0 out · bases loaded');
+    assert.equal(gs.buildSituation({}, 'football', abbr), '');
+    assert.equal(gs.buildSituation({ situation: { lastPlay: {} } }, 'basketball', abbr), '');
+});
+
+test('soccer events: goals and cards only, own goals/pens tagged, last 8', () => {
+    const abbr = (id) => ({ 9: 'RMA', 7: 'AEK' }[id] || '');
+    const d = (min, extra, id = '9', who = 'Player') => ({ clock: { displayValue: min }, team: { id }, athletesInvolved: [{ displayName: who }], ...extra });
+    const comp = { details: [d("12'", { scoringPlay: true }, '7', 'Koita'), d("20'", { scoringPlay: false }), d("34'", { yellowCard: true }, '7'),
+        d("50'", { scoringPlay: true, penaltyKick: true }), d("60'", { scoringPlay: true, ownGoal: true }), d("70'", { redCard: true })] };
+    const ev = gs.soccerEvents(comp, abbr);
+    assert.deepEqual(ev.map((e) => [e.min, e.kind, e.team]), [["12'", 'goal', 'AEK'], ["34'", 'yellow', 'AEK'], ["50'", 'pen', 'RMA'], ["60'", 'og', 'RMA'], ["70'", 'red', 'RMA']]);
+    assert.equal(ev[0].player, 'Koita');
+    const many = { details: Array.from({ length: 12 }, (_, i) => d(`${i}'`, { scoringPlay: true })) };
+    assert.equal(gs.soccerEvents(many, abbr).length, 8);
+});
+
+test('extra: win probability, line and team stats from a summary', () => {
+    const stat = (name, displayValue) => ({ name, displayValue });
+    const summary = {
+        winprobability: [{ homeWinPercentage: 0.4, tiePercentage: 0 }, { homeWinPercentage: 0.75, tiePercentage: 0 }],
+        pickcenter: [{ details: 'PHX -3.5', overUnder: 224.5 }],
+        boxscore: { teams: [
+            { homeAway: 'away', team: { abbreviation: 'LAC' }, statistics: [stat('fieldGoalPct', '40'), stat('totalRebounds', '33'), stat('assists', '21')] },
+            { homeAway: 'home', team: { abbreviation: 'PHX' }, statistics: [stat('fieldGoalPct', '53'), stat('totalRebounds', '41'), stat('assists', '26')] }] }
+    };
+    const x = gs.buildExtra(summary, 'basketball');
+    assert.deepEqual(x.winProb, { home: 0.75, away: 0.25 });
+    assert.deepEqual(x.spread, { text: 'PHX -3.5', overUnder: 224.5 });
+    assert.equal(x.teamStats.away, 'LAC');
+    assert.deepEqual(x.teamStats.rows[0], { label: 'FG%', away: '40%', home: '53%' });
+    assert.deepEqual(x.teamStats.rows.map((r) => r.label), ['FG%', 'REB', 'AST']);
+    const none = gs.buildExtra({}, 'soccer');
+    assert.deepEqual(none, { winProb: null, spread: null, teamStats: null });
+    const soc = gs.buildExtra({ boxscore: { teams: [{ homeAway: 'home', team: { abbreviation: 'A' }, statistics: [stat('possessionPct', '56.5')] }, { homeAway: 'away', team: { abbreviation: 'B' }, statistics: [stat('possessionPct', '43.5')] }] } }, 'soccer');
+    assert.deepEqual(soc.teamStats.rows[0], { label: 'Possession', away: '43.5%', home: '56.5%' });
+});
+
+test('soccer competitions are separate labelled feeds; league words route searches', () => {
+    const labels = (q) => gs.parseQuery(q).leagues.map((l) => l.label);
+    assert.deepEqual(labels('premier league'), ['Premier League']);
+    assert.deepEqual(labels('champions league arsenal'), ['Champions League']);
+    assert.ok(labels('soccer arsenal').includes('Premier League') && labels('soccer arsenal').includes('Soccer'));
+    assert.deepEqual(gs.parseQuery('premier league arsenal').teamTokens, ['arsenal']);
+    // labelled feeds precede the catch-all so they win ties
+    const keys = LEAGUES.map((l) => l.key);
+    assert.ok(keys.indexOf('soc-eng.1') < keys.indexOf('soccer'));
+    assert.equal(keys[keys.length - 1], 'soccer');
+});
