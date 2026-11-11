@@ -73,7 +73,7 @@ const GameStats = {
             </div>`;
         const live = game.state === 'in';
         this.game = game;
-        const canLineup = game.id && /^(soccer|ncaa-soccer|ncaam|ncaaw|nba)/.test(game.leagueKey || '');
+        const canLineup = game.id && /^(soccer|ncaa-soccer|ncaam|ncaaw|nba|nfl)/.test(game.leagueKey || '');
         this.el.innerHTML = `
             <div class="gs-head"><span class="gs-league">${this.esc(game.league)}</span>
               <span class="gs-status${live ? ' live' : ''}">${this.esc(game.detail)}</span></div>
@@ -116,9 +116,9 @@ const GameStats = {
         } else {
             const p = (x, sub) => `<div class="gs-p${x.out ? ' out' : ''}${x.in ? ' in' : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(sub ? x.stat || '' : x.pos)}</em></div>`;
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
-                ${t.starters.map((x) => p(x, data.sport === 'basketball')).join('')}
+                ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x, data.sport === 'basketball')).join('')}
                 ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x, data.sport === 'basketball')).join('')}` : ''}</div>`;
-            box.innerHTML = teams.map(col).join('');
+            box.innerHTML = teams.map(col).join('') + (data.note ? `<div class="gs-note">${this.esc(data.note)}</div>` : '');
         }
         clearTimeout(this.lineupTimer);
         this.lineupTimer = setTimeout(() => this.loadLineups(), 30000);
@@ -165,6 +165,8 @@ const GameStats = {
 .gs-p span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gs-p em{font-style:normal;font-size:10px;opacity:.55}
 .gs-p.out span{opacity:.5;text-decoration:line-through}.gs-p.in span::after{content:' \u2191';color:#5bd98c}
+.gs-note{position:sticky;bottom:0;flex-basis:100%;font-size:10px;opacity:.55}
+.gs-lineups:has(.gs-note){flex-wrap:wrap}
 .gs-empty{opacity:.7;font-size:12px}
 @media (max-width:640px){.gamestats{bottom:110px;left:8px;min-width:170px}.gs-lineups{min-width:0;flex-direction:column}}
 `;

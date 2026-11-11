@@ -104,3 +104,14 @@ test('lineups: unsupported sports return nothing; bad ids/leagues rejected', asy
     assert.equal(await gs.lineups('../etc', '1'), null);
     assert.equal(await gs.lineups('soccer', '1/../../x'), null);
 });
+
+test('lineups: NFL depth chart joined with roster jersey numbers', () => {
+    const depth = { depthchart: [
+        { name: '3WR 1TE', positions: { qb: { athletes: [{ id: '1', displayName: 'Starting QB' }, { id: '2', displayName: 'Backup' }] }, wr1: { athletes: [{ id: '3', displayName: 'Wide Out' }] } } },
+        { name: 'Base 4-3 D', positions: { lde: { athletes: [{ id: '4', displayName: 'Edge' }] } } }
+    ] };
+    const roster = { athletes: [{ items: [{ id: '1', jersey: '8' }, { id: '3', jersey: '81' }, { id: '4', jersey: '97' }] }] };
+    const out = gs.nflTeamStarters(depth, roster);
+    assert.deepEqual(out.map((p) => [p.unit, p.pos, p.num, p.name]), [
+        ['Offense', 'QB', '8', 'Starting QB'], ['Offense', 'WR', '81', 'Wide Out'], ['Defense', 'LDE', '97', 'Edge']]);
+});

@@ -205,6 +205,54 @@ function buildLineups(summary, sport) {
     return [];
 }
 
+// NFL: ESPN's game summary has no lineup, so use each team's depth chart (projected starters per position)
+// joined with its roster for jersey numbers. Not the official game-day active list.
+const TEAM_CACHE_MS = 10 * 60_000;
+const teamCache = new Map(); // `${path}:${teamId}` -> { at, promise }
+
+function getJson(url) {
+    return fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
+}
+
+function nflTeamStarters(depth, roster) {
+    const jersey = new Map();
+    for (const g of roster?.athletes || []) for (const a of g.items || []) jersey.set(String(a.id), a.jersey || '');
+    const charts = depth?.depthchart || [];
+    const pick = (re) => charts.find((c) => re.test(c.name || ''));
+    const unit = (chart, label) => Object.entries(chart?.positions || {}).filter(([pos]) => pos !== 'fb' && pos !== 'nb').map(([pos, v]) => {
+        const a = v.athletes?.[0];
+        return a ? { unit: label, num: jersey.get(String(a.id)) || '', name: a.displayName || '', pos: pos.replace(/\d+$/, '').toUpperCase() } : null;
+    }).filter(Boolean);
+    const offense = charts.find((c) => c.positions && 'qb' in c.positions);
+    const defense = pick(/\bD\b|defense/i) || charts.find((c) => c.positions && ('mlb' in c.positions || 'lde' in c.positions || 'lcb' in c.positions));
+    return [...unit(offense, 'Offense'), ...unit(defense, 'Defense')];
+}
+
+function nflTeam(path, teamId) {
+    const key = `${path}:${teamId}`;
+    const hit = teamCache.get(key);
+    if (hit && Date.now() - hit.at < TEAM_CACHE_MS) return hit.promise;
+    const base = `https://site.api.espn.com/apis/site/v2/sports/${path}/teams/${teamId}`;
+    const entry = { at: Date.now(), promise: null };
+    entry.promise = Promise.all([getJson(base + '/depthcharts'), getJson(base + '/roster')])
+        .then(([d, r]) => nflTeamStarters(d, r))
+        .catch((err) => { teamCache.delete(key); console.warn(`[GameStats] nfl team ${key} failed: ${err.message}`); return []; });
+    teamCache.set(key, entry);
+    return entry.promise;
+}
+
+async function nflLineups(league, summary) {
+    const comps = summary.header?.competitions?.[0]?.competitors || [];
+    const teams = await Promise.all(comps.map(async (c) => ({
+        homeAway: c.homeAway || '',
+        name: c.team?.shortDisplayName || c.team?.displayName || '',
+        formation: '',
+        starters: await nflTeam(league.path, c.team?.id),
+        bench: []
+    })));
+    return teams;
+}
+
 async function lineups(leagueKey, eventId) {
     const league = LEAGUES.find((l) => l.key === leagueKey);
     if (!league || !/^\d{1,20}$/.test(String(eventId))) return null; // only known leagues, numeric ids
@@ -215,7 +263,9 @@ async function lineups(leagueKey, eventId) {
     const entry = { at: Date.now(), promise: null };
     entry.promise = fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((d) => ({ sport: league.sport, teams: buildLineups(d, league.sport) }))
+        .then(async (d) => (league.key === 'nfl'
+            ? { sport: 'football', note: 'Depth chart (projected starters)', teams: await nflLineups(league, d) }
+            : { sport: league.sport, teams: buildLineups(d, league.sport) }))
         .catch((err) => {
             lineupCache.delete(key);
             console.warn(`[GameStats] lineups ${key} failed: ${err.message}`);
@@ -226,4 +276,4 @@ async function lineups(leagueKey, eventId) {
     return entry.promise;
 }
 
-module.exports = { lineups, buildLineups, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
