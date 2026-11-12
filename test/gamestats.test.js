@@ -314,3 +314,10 @@ test('team game pick: live first, otherwise nearest in time', () => {
     assert.equal(gs.pickTeamGame('wrexham', [farPre, nearFinal], now), nearFinal);
     assert.equal(gs.pickTeamGame('wrexham', [e('in', '2026-11-11T11:00:00Z', 'Leeds')], now), null);
 });
+
+test('players: ESPN stat descriptions ride along as a third element (only when ESPN sends one)', () => {
+    const summary = { boxscore: { players: [{ team: { id: '1', shortDisplayName: 'A' }, statistics: [{
+        labels: ['PTS', 'OREB'], descriptions: ['Points', ''], athletes: [{ athlete: { id: '9', displayName: 'X Y', jersey: '3' }, stats: ['10', '2'] }] }] }] } };
+    const [t] = gs.boxPlayers(summary, 'basketball');
+    assert.deepEqual(t.players[0].groups[0].stats, [['PTS', '10', 'Points'], ['OREB', '2']]);
+});
