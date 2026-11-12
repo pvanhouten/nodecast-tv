@@ -844,7 +844,7 @@ const GameStats = {
   background:rgba(12,14,20,.78);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);border-radius:10px;
   color:#fff;font:13px/1.35 Inter,system-ui,sans-serif;user-select:none;pointer-events:auto;transition:opacity .35s}
 .gamestats[hidden]{display:none}
-.gamestats.dim:not(:hover):not(.panel):not(.empty):not(.dragging){opacity:.42}
+.gamestats.dim:not(:hover):not(:focus-within):not(.empty):not(.dragging){opacity:.42}
 .gs-head{display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:4px;cursor:grab;touch-action:none}
 .gs-head .gs-league,.gs-head .gs-status{opacity:.85}.gs-head .gs-status{margin-left:auto}
 .gs-mini{display:none;font-weight:600;font-variant-numeric:tabular-nums}
