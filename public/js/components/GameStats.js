@@ -508,11 +508,13 @@ const GameStats = {
             ? `<div class="gs-line">Line ${this.esc(x.spread.text)}${x.spread.overUnder != null ? ' \u00b7 O/U ' + this.esc(x.spread.overUnder) : ''}</div>` : '';
         const icon = { goal: '\u26bd', pen: '\u26bd (pen)', og: '\u26bd (og)', yellow: '\ud83d\udfe8', red: '\ud83d\udfe5' };
         const events = !hide && game.events && game.events.length
-            ? `<div class="gs-events">${game.events.slice(-4).map((e) => `<div>${this.esc(e.min)} ${icon[e.kind] || ''} ${this.esc(e.player)} <em>${this.esc(e.team)}</em></div>`).join('')}</div>` : '';
+            ? `<div class="gs-events">${game.events.map((e) => `<div>${this.esc(e.min)} ${icon[e.kind] || ''} ${this.esc(e.player)} <em>${this.esc(e.team)}</em></div>`).join('')}</div>` : '';
         const sit = !hide && game.situation ? `<div class="gs-sit">${this.esc(game.situation)}</div>` : '';
         const play = !hide && game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : '';
         const canLineup = game.id && (game.sport === 'soccer' || ['ncaam', 'ncaaw', 'nba', 'nfl', 'nhl', 'mlb'].includes(game.leagueKey));
         const canTstats = !hide && !!(this.tl.extra.length && this.tl.extra[this.tl.extra.length - 1].data.teamStats);
+        const oldEv = top.querySelector('.gs-events');
+        const evTop = oldEv && !(oldEv.scrollHeight - oldEv.scrollTop - oldEv.clientHeight < 6) ? oldEv.scrollTop : -1; // -1 = follow newest
         top.innerHTML = `
             <div class="gs-head" title="Drag to move \u00b7 double-click to reset"><span class="gs-league">${this.esc(game.league)}</span>
               <span class="gs-mini">${this.esc(game.away.abbr || game.away.name)} ${sc(game.away.score)}\u2013${sc(game.home.score)} ${this.esc(game.home.abbr || game.home.name)}</span>
@@ -529,6 +531,8 @@ const GameStats = {
               </div>
               <div class="gs-foot"><span class="gs-upd"></span></div>
             </div>`;
+        const newEv = top.querySelector('.gs-events');
+        if (newEv) newEv.scrollTop = evTop < 0 ? newEv.scrollHeight : evTop;
         this.paintFooter();
     },
 
@@ -1036,7 +1040,7 @@ const GameStats = {
 .gs-rec{font-size:11px;opacity:.55}
 .gs-score{min-width:28px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
 .gs-sit{margin-top:4px;font-size:11px;font-weight:600;color:#ffd166}
-.gs-events{margin-top:4px;font-size:11px}.gs-events em{font-style:normal;opacity:.55}
+.gs-events{margin-top:4px;font-size:11px;max-height:120px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}.gs-events em{font-style:normal;opacity:.55}
 .gs-line{margin-top:3px;font-size:10px;opacity:.65}
 .gs-wp{display:flex;height:5px;margin-top:6px;border-radius:3px;overflow:hidden;background:rgba(255,255,255,.12)}
 .gs-wp-a{background:#6ea8fe}.gs-wp-h{background:#f0883e}
