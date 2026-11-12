@@ -424,6 +424,19 @@ class ChannelList {
 
         // Start observing loader for additional batches
         this.observer.observe(this.loader);
+
+        this.resumePending();
+    }
+
+    /**
+     * Resume the channel named in the URL (#live/<id>) once, as soon as the channel list is loaded.
+     * Called after each render and once more at startup (the list may have loaded before the URL was read).
+     */
+    resumePending() {
+        const resume = window.app?.pendingChannelId;
+        if (!resume || !this.channels.length) return;
+        window.app.pendingChannelId = null;
+        if (this.channels.some(c => c.id === resume)) this.selectChannel({ channelId: resume });
     }
 
     /**
@@ -1083,6 +1096,10 @@ class ChannelList {
         if (!channel) return;
 
         this.currentChannel = channel;
+        // Put the channel in the URL (replace, so Back doesn't step through every channel) to resume it on refresh
+        if (window.app?.currentPage === 'live') {
+            try { history.replaceState({ page: 'live' }, '', `#live/${encodeURIComponent(channel.id)}`); } catch (_) { /* ignore */ }
+        }
         this.currentRenderId = dataset.renderId; // Track which visual instance is active
         this.currentRenderGroup = dataset.renderGroup; // Track which group the selection came from
 

@@ -157,9 +157,14 @@ class App {
         });
 
         // Navigate to the page from URL hash, or default to home
-        const hash = window.location.hash.slice(1); // Remove #
-        const initialPage = hash && this.pages[hash] ? hash : 'home';
+        // Hash is "#page" or "#live/<channelId>" (the channel being watched, so a refresh resumes it)
+        const [hashPage, ...hashRest] = window.location.hash.slice(1).split('/');
+        const initialPage = hashPage && this.pages[hashPage] ? hashPage : 'home';
+        if (initialPage === 'live' && hashRest.length) {
+            try { this.pendingChannelId = decodeURIComponent(hashRest.join('/')); } catch (_) { /* ignore a bad link */ }
+        }
         this.navigateTo(initialPage, true); // true = replace history (don't add)
+        this.channelList?.resumePending?.(); // channels may already be loaded: resume the #live/<id> channel now
 
         console.log('NodeCast TV initialized');
     }
@@ -259,13 +264,17 @@ class App {
             return;
         }
 
+        // Live TV keeps the channel being watched in the URL so a refresh resumes it
+        const liveId = pageName === 'live' ? (this.pendingChannelId || this.channelList?.currentChannel?.id) : null;
+        const route = liveId ? `#live/${encodeURIComponent(liveId)}` : `#${pageName}`;
+
         // Update browser history
         if (replaceHistory) {
             // Replace current history entry (used on initial load)
-            history.replaceState({ page: pageName }, '', `#${pageName}`);
+            history.replaceState({ page: pageName }, '', route);
         } else {
             // Add new history entry
-            history.pushState({ page: pageName }, '', `#${pageName}`);
+            history.pushState({ page: pageName }, '', route);
         }
 
         // Update nav
