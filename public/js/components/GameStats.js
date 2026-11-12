@@ -93,6 +93,7 @@ const GameStats = {
     extra: null,          // { winProb, spread, teamStats } for the shown game
     query: '',
     selected: null,       // player id shown in the stat card
+    pinnedId: null,       // player whose card was opened by clicking a name in the lineups
     tl: { extra: [], lineups: [], players: [] },  // [{ t, data }] timestamped fetches, so a spoiler delay can show them as they were
     seen: {},             // snapshot last painted per feed (repaint when the delayed pick changes)
     seasonCache: {},
@@ -201,7 +202,7 @@ const GameStats = {
         clearTimeout(this.timer);
         clearTimeout(this.extraTimer);
         this.closeLineups();
-        this.query = ''; this.selected = null; this.resetTl(); this.seasonCache = {};
+        this.query = ''; this.selected = null; this.pinnedId = null; this.resetTl(); this.seasonCache = {};
         this.channel = channel || null;
         this.pinned = this.loadPin();
         this.shellGame = undefined; // fresh panels for a new channel
@@ -338,7 +339,7 @@ const GameStats = {
             const li = this.delayed('lineups').snap;
             if (li !== this.seen.lineups) this.renderLineups();
         }
-        if (this.query.trim()) {
+        if (this.query.trim() || this.pinnedId) {
             const pl = this.delayed('players').snap;
             if (pl !== this.seen.players) this.runSearch();
         }
@@ -391,6 +392,8 @@ const GameStats = {
                 else if (hit('.gs-unpin-btn')) this.unpin();
                 else if (hit('.gs-tstats-btn')) this.toggleTstats();
                 else if (hit('.gs-lineups-btn')) this.toggleLineups();
+                else if (hit('.gs-card-x')) this.closeCard();
+                else if (hit('.gs-p')) this.pickPlayer(hit('.gs-p'));
             });
             this.bindDrag();
             this.bindTips();
@@ -406,7 +409,7 @@ const GameStats = {
         // otherwise the inputs would lose focus/text every poll.
         const gid = game ? game.id : null;
         if (!this.el.querySelector('.gs-lineups') || this.shellGame !== gid) {
-            this.query = ''; this.selected = null; this.resetTl(); this.seasonCache = {};
+            this.query = ''; this.selected = null; this.pinnedId = null; this.resetTl(); this.seasonCache = {};
             this.el.innerHTML = `<div class="gs-top"></div>
                 <div class="gs-finder" hidden>
                   <input type="search" class="gs-fq" placeholder="Find game, e.g. ncaa mens basketball wisconsin" autocomplete="off" spellcheck="false">
@@ -790,10 +793,10 @@ const GameStats = {
             box.innerHTML = '<div class="gs-empty">Lineups not posted yet</div>';
         } else {
             // Hide scores: names only. A spoiler delay shows the stats as they were `delay` seconds ago instead.
-            const p = (x) => `<div class="gs-p${!hide && x.out ? ' out' : ''}${!hide && x.in ? ' in' : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(hide ? x.pos : (x.stat || x.pos))}</em></div>`;
+            const p = (x, team) => `<div class="gs-p${!hide && x.out ? ' out' : ''}${!hide && x.in ? ' in' : ''}" data-team="${this.esc(team)}" data-name="${this.esc(x.name)}" data-num="${this.esc(x.num)}" title="Show player card"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(hide ? x.pos : (x.stat || x.pos))}</em></div>`;
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
-                ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x)).join('')}
-                ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x)).join('')}` : ''}</div>`;
+                ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x, t.name)).join('')}
+                ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x, t.name)).join('')}` : ''}</div>`;
             box.innerHTML = teams.map(col).join('')
                 + (data.note ? `<div class="gs-note">${this.esc(data.note)}</div>` : '')
                 + (hide ? '<div class="gs-note">Live stats hidden by the spoiler guard.</div>' : '')
@@ -811,6 +814,7 @@ const GameStats = {
         input.addEventListener('input', () => {
             this.query = input.value;
             this.selected = null;
+            this.pinnedId = null;
             clearTimeout(t);
             t = setTimeout(() => this.runSearch(), 150);
         });
@@ -835,7 +839,7 @@ const GameStats = {
         const out = this.el && this.el.querySelector('.gs-results');
         if (!out) return;
         const raw = this.query.trim().replace(/^#/, '');
-        if (!raw) { out.innerHTML = ''; return; }
+        if (!raw && !this.pinnedId) { out.innerHTML = ''; return; }
         if (this.game) await this.fetchPlayers(this.game);
         if (!this.el || !out.isConnected) return;
         const r = this.delayed('players');
@@ -843,6 +847,12 @@ const GameStats = {
         const data = r.data;
         if (r.pend) { out.innerHTML = this.syncingNote(); return; }
         const all = ((data && data.teams) || []).flatMap((t) => t.players.map((p) => ({ ...p, team: t.name })));
+        if (!raw) { // a card opened from the lineups
+            const pinned = all.find((p) => p.id === this.pinnedId);
+            if (pinned) { this.selected = pinned.id; out.innerHTML = this.card(pinned); this.loadSeason(pinned); }
+            else out.innerHTML = '<div class="gs-empty">No stats for this player yet</div>';
+            return;
+        }
         const q = this.norm(raw);
         const hits = (/^\d+$/.test(q) ? all.filter((p) => String(p.num) === q) : all.filter((p) => this.norm(p.name).includes(q))).slice(0, 8);
         this.hits = hits;
@@ -857,6 +867,37 @@ const GameStats = {
             out.innerHTML = this.card(p);
             this.loadSeason(p);
         }));
+    },
+
+    // Click a name in the lineups: show that player's card (found in the players feed by team + name, number as tie-break).
+    async pickPlayer(row) {
+        if (!this.game || !this.el) return;
+        const team = this.norm(row.dataset.team), name = this.norm(row.dataset.name), num = String(row.dataset.num || '');
+        await this.fetchPlayers(this.game);
+        const r = this.delayed('players');
+        const all = ((r.data && r.data.teams) || []).flatMap((t) => t.players.map((p) => ({ ...p, team: t.name })));
+        const same = all.filter((p) => this.norm(p.name) === name);
+        const pick = same.find((p) => this.norm(p.team) === team) || same.find((p) => String(p.num) === num) || same[0] || null;
+        const out = this.el.querySelector('.gs-results');
+        if (!out) return;
+        const input = this.el.querySelector('.gs-q');
+        if (input) input.value = '';
+        this.query = '';
+        this.pinnedId = pick ? pick.id : null;
+        this.selected = this.pinnedId;
+        if (r.pend) out.innerHTML = this.syncingNote();
+        else if (!pick) out.innerHTML = `<div class="gs-card"><div class="gs-card-h"><b>${this.esc(row.dataset.name)}</b><button type="button" class="gs-card-x" title="Close" aria-label="Close player card">&times;</button></div><div class="gs-empty">No stats for this player yet</div></div>`;
+        else { this.seen.players = r.snap; out.innerHTML = this.card(pick); this.loadSeason(pick); }
+        out.scrollIntoView({ block: 'nearest' });
+    },
+
+    closeCard() {
+        this.pinnedId = null; this.selected = null; this.query = '';
+        const input = this.el && this.el.querySelector('.gs-q');
+        if (input) input.value = '';
+        const out = this.el && this.el.querySelector('.gs-results');
+        if (out) out.innerHTML = '';
+        if (this.tipEl) this.tipEl.hidden = true;
     },
 
     // Tooltip data for a stat label: full name + what it means (own glossary first, then ESPN's description).
@@ -904,7 +945,8 @@ const GameStats = {
             ? '<div class="gs-empty">This game\u2019s stats are hidden by the spoiler guard</div>'
             : groups.length ? groups.map((g) => `<h5>${this.esc(g.title)}</h5><div class="gs-kvs">${kv(g.stats)}</div>`).join('') : '<div class="gs-empty">No stats in this game yet</div>';
         return `<div class="gs-card"><div class="gs-card-h"><b>${p.num ? '#' + this.esc(p.num) + ' ' : ''}${this.esc(p.name)}</b>
-            <em>${this.esc(p.team)}${p.pos ? ' \u00b7 ' + this.esc(p.pos) : ''}</em></div>
+            <em>${this.esc(p.team)}${p.pos ? ' \u00b7 ' + this.esc(p.pos) : ''}</em>
+            <button type="button" class="gs-card-x" title="Close" aria-label="Close player card">&times;</button></div>
           ${body}
           <div class="gs-season" data-season="${this.esc(p.id)}"></div></div>`;
     },
@@ -997,7 +1039,8 @@ const GameStats = {
 .gs-hit:hover{background:rgba(255,255,255,.16)}
 .gs-hit b{min-width:22px;text-align:right;opacity:.75}.gs-hit span{flex:1}.gs-hit em{font-style:normal;font-size:10px;opacity:.55}
 .gs-card{margin-top:6px;padding:8px;border-radius:8px;background:rgba(255,255,255,.07)}
-.gs-card-h{display:flex;justify-content:space-between;gap:8px;margin-bottom:2px}.gs-card-h em{font-style:normal;font-size:11px;opacity:.6}
+.gs-card-h{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}.gs-card-h em{margin-left:auto}
+.gs-card-x{flex:none;width:20px;height:20px;padding:0;border:0;border-radius:5px;background:rgba(255,255,255,.1);color:#fff;font-size:14px;line-height:1;cursor:pointer;align-self:center}.gs-card-x:hover{background:rgba(255,255,255,.24)}.gs-card-h em{font-style:normal;font-size:11px;opacity:.6}
 .gs-card h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
 .gs-kvs{display:flex;flex-wrap:wrap;gap:4px 10px}
 .gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}.gs-kv span.gs-tip{cursor:help;text-decoration:underline dotted rgba(255,255,255,.4);text-underline-offset:2px}
@@ -1010,7 +1053,7 @@ const GameStats = {
 .gs-col{flex:1;min-width:150px}
 .gs-col h4{margin:0 0 4px;font-size:12px}.gs-col h4 small{opacity:.6;font-weight:400}
 .gs-col h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
-.gs-p{display:flex;align-items:baseline;gap:6px;font-size:12px;padding:1px 0}
+.gs-p{display:flex;align-items:baseline;gap:6px;font-size:12px;padding:1px 4px;margin:0 -4px;border-radius:4px;cursor:pointer}.gs-p:hover{background:rgba(255,255,255,.1)}
 .gs-p b{min-width:20px;text-align:right;font-variant-numeric:tabular-nums;opacity:.75}
 .gs-p span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gs-p em{font-style:normal;font-size:10px;opacity:.55}
