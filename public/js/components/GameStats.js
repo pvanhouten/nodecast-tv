@@ -393,6 +393,7 @@ const GameStats = {
                 else if (hit('.gs-lineups-btn')) this.toggleLineups();
             });
             this.bindDrag();
+            this.bindTips();
             host.appendChild(this.el);
             if (window.ResizeObserver) new ResizeObserver(() => this.applyPos()).observe(this.el);
             const controls = document.getElementById('player-controls-overlay');
@@ -858,11 +859,42 @@ const GameStats = {
         }));
     },
 
-    // Hover text for a stat label: full name + what it means (own glossary first, then ESPN's description).
+    // Tooltip data for a stat label: full name + what it means (own glossary first, then ESPN's description).
     statTip(label, espnDesc) {
         const g = (STAT_GLOSSARY[this.game && this.game.sport] || {})[label];
-        const text = g ? `${g[0]}: ${g[1]}` : (espnDesc ? `${label}: ${espnDesc}` : '');
-        return text ? ` class="gs-tip" title="${this.esc(text)}"` : '';
+        const name = g ? g[0] : label;
+        const desc = g ? g[1] : (espnDesc || '');
+        if (!g && !espnDesc) return '';
+        return ` class="gs-tip" data-abbr="${this.esc(label)}" data-name="${this.esc(name)}" data-desc="${this.esc(desc)}"`;
+    },
+
+    // One floating tooltip, kept outside the (scrolling) overlay so it is never clipped, and inside the video container so it
+    // also shows in fullscreen. Mouse: hover. Touch: tap the label (tap anywhere else to close).
+    bindTips() {
+        const tip = document.createElement('div');
+        tip.className = 'gs-tooltip';
+        tip.hidden = true;
+        this.container().appendChild(tip);
+        this.tipEl = tip;
+        const show = (target) => {
+            const abbr = target.dataset.abbr, name = target.dataset.name, desc = target.dataset.desc;
+            tip.innerHTML = `<div class="gs-tt-h"><b>${this.esc(name)}</b>${abbr && abbr !== name ? `<em>${this.esc(abbr)}</em>` : ''}</div>${desc ? `<div class="gs-tt-d">${this.esc(desc)}</div>` : ''}`;
+            tip.hidden = false;
+            const host = this.container().getBoundingClientRect();
+            const r = target.getBoundingClientRect();
+            const w = tip.offsetWidth, h = tip.offsetHeight;
+            let x = r.left - host.left + r.width / 2 - w / 2;
+            x = Math.max(6, Math.min(x, host.width - w - 6));
+            let y = r.bottom - host.top + 8;             // below the label (the value sits above it) ...
+            if (y + h > host.height - 6) y = r.top - host.top - h - 8 - 14;  // ... or above, clear of the value, when there is no room
+            tip.style.left = Math.round(x) + 'px';
+            tip.style.top = Math.round(y) + 'px';
+        };
+        const hide = () => { tip.hidden = true; };
+        this.el.addEventListener('mouseover', (e) => { const t = e.target.closest('.gs-tip'); if (t) show(t); });
+        this.el.addEventListener('mouseout', (e) => { if (e.target.closest('.gs-tip')) hide(); });
+        this.el.addEventListener('click', (e) => { const t = e.target.closest('.gs-tip'); if (t) show(t); else hide(); });
+        this.el.addEventListener('scroll', hide);
     },
 
     card(p) {
@@ -969,6 +1001,12 @@ const GameStats = {
 .gs-card h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
 .gs-kvs{display:flex;flex-wrap:wrap;gap:4px 10px}
 .gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}.gs-kv span.gs-tip{cursor:help;text-decoration:underline dotted rgba(255,255,255,.4);text-underline-offset:2px}
+.gs-tooltip{position:absolute;z-index:30;max-width:240px;padding:8px 10px;border-radius:8px;pointer-events:none;
+  background:rgba(8,10,16,.96);border:1px solid rgba(255,255,255,.18);box-shadow:0 6px 20px rgba(0,0,0,.5);color:#fff;font:12px/1.4 Inter,system-ui,sans-serif}
+.gs-tooltip[hidden]{display:none}
+.gs-tt-h{display:flex;align-items:baseline;gap:8px}.gs-tt-h b{font-size:13px}
+.gs-tt-h em{font-style:normal;font-size:10px;font-weight:600;letter-spacing:.04em;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.14)}
+.gs-tt-d{margin-top:3px;opacity:.8}
 .gs-col{flex:1;min-width:150px}
 .gs-col h4{margin:0 0 4px;font-size:12px}.gs-col h4 small{opacity:.6;font-weight:400}
 .gs-col h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
