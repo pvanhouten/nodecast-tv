@@ -37,8 +37,8 @@ const GameStats = {
     extra: null,          // { winProb, spread, teamStats } for the shown game
     query: '',
     selected: null,       // player id shown in the stat card
-    playersData: null,
-    playersAt: 0,
+    tl: { extra: [], lineups: [], players: [] },  // [{ t, data }] timestamped fetches, so a spoiler delay can show them as they were
+    seen: {},             // snapshot last painted per feed (repaint when the delayed pick changes)
     seasonCache: {},
     min: false,
     off: false,
@@ -145,7 +145,7 @@ const GameStats = {
         clearTimeout(this.timer);
         clearTimeout(this.extraTimer);
         this.closeLineups();
-        this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
+        this.query = ''; this.selected = null; this.resetTl(); this.seasonCache = {};
         this.channel = channel || null;
         this.pinned = this.loadPin();
         this.shellGame = undefined; // fresh panels for a new channel
@@ -237,10 +237,62 @@ const GameStats = {
         return this._mask.game;
     },
 
+    resetTl() {
+        this.tl = { extra: [], lineups: [], players: [] };
+        this.seen = {};
+    },
+
+    // Keep a timestamped copy of each fetch (t = when the request started, so the data is never newer than t).
+    record(name, data, t) {
+        if (!data) return;
+        const arr = this.tl[name];
+        arr.push({ t, data });
+        const keep = Date.now() - (this.settings.delay * 1000 + 120000);
+        while (arr.length > 1 && arr[0].t < keep && arr[1].t <= keep) arr.shift();
+    },
+
+    // What to show for a feed: the newest data, or (spoiler delay) the newest copy that is at least `delay` old.
+    // { data, snap, pend }: pend = data exists but is still too new to show.
+    delayed(name) {
+        const arr = this.tl[name];
+        if (!arr.length) return { data: null, snap: null, pend: false };
+        const d = this.settings.delay * 1000;
+        if (!d) { const n = arr[arr.length - 1]; return { data: n.data, snap: n, pend: false }; }
+        const cutoff = Date.now() - d;
+        let pick = null;
+        for (const s of arr) if (s.t <= cutoff) pick = s;
+        return pick ? { data: pick.data, snap: pick, pend: false } : { data: null, snap: null, pend: true };
+    },
+
+    stale(name, ms) {
+        const arr = this.tl[name];
+        return !arr.length || Date.now() - arr[arr.length - 1].t >= ms;
+    },
+
+    syncingNote() {
+        return `<div class="gs-empty">Syncing ${this.settings.delay}s delay\u2026</div>`;
+    },
+
+    // Repaint panels whose delayed pick has moved on since they were drawn.
+    syncDelayed() {
+        if (!this.game) return;
+        const ex = this.delayed('extra').snap;
+        if (ex !== this.seen.extra) { this.seen.extra = ex; this.paintTop(this.game); this.renderTstats(); }
+        if (this.lineupsOpen) {
+            const li = this.delayed('lineups').snap;
+            if (li !== this.seen.lineups) this.renderLineups();
+        }
+        if (this.query.trim()) {
+            const pl = this.delayed('players').snap;
+            if (pl !== this.seen.players) this.runSearch();
+        }
+    },
+
     refreshView() {
         if (!this.channel) return;
         const shown = this.shownGame();
         if (shown !== this.shown && (shown || this.shown)) this.render(shown);
+        this.syncDelayed();
         this.paintFooter();
     },
 
@@ -297,7 +349,7 @@ const GameStats = {
         // otherwise the inputs would lose focus/text every poll.
         const gid = game ? game.id : null;
         if (!this.el.querySelector('.gs-lineups') || this.shellGame !== gid) {
-            this.query = ''; this.selected = null; this.playersData = null; this.seasonCache = {};
+            this.query = ''; this.selected = null; this.resetTl(); this.seasonCache = {};
             this.el.innerHTML = `<div class="gs-top"></div>
                 <div class="gs-finder" hidden>
                   <input type="search" class="gs-fq" placeholder="Find game, e.g. ncaa mens basketball wisconsin" autocomplete="off" spellcheck="false">
@@ -307,7 +359,7 @@ const GameStats = {
                   <label><input type="checkbox" class="gs-set-hide"> Hide scores</label>
                   <label><input type="checkbox" class="gs-set-automin"> Minimize when the game ends</label>
                   <label><input type="checkbox" class="gs-set-dim"> Fade when player controls hide</label>
-                  <div class="gs-note">Press G to show or hide this overlay. IPTV is usually behind live: set a delay so scores match what you see.</div></div>
+                  <div class="gs-note">Press G to show or hide this overlay. IPTV is usually behind live: set a delay so scores, win probability, lineups and player stats match what you see.</div></div>
                 <div class="gs-tstats" hidden></div>
                 <div class="gs-lineups" hidden>
                   <div class="gs-search"><input type="search" class="gs-q" placeholder="Find player: name or #" autocomplete="off" spellcheck="false">
@@ -358,7 +410,6 @@ const GameStats = {
         this.el.classList.toggle('min', minNow);
 
         const hide = this.settings.hideScores;
-        const safe = this.spoilerSafe();
         const sc = (v) => (hide ? '\u2022' : this.esc(v));
         const live = game.state === 'in';
         const row = (t) => `
@@ -368,9 +419,9 @@ const GameStats = {
               <span class="gs-rec">${this.esc(t.record)}</span>
               <span class="gs-score">${sc(t.score)}</span>
             </div>`;
-        const x = this.extra;
+        const x = this.delayed('extra').data;
         let wp = '';
-        if (!safe && live && x && x.winProb) {
+        if (!hide && live && x && x.winProb) {
             const a = Math.round(x.winProb.away * 100), h = Math.round(x.winProb.home * 100);
             if (a + h > 0) wp = `<div class="gs-wp" title="Win probability"><span class="gs-wp-a" style="flex:${a}"></span><span class="gs-wp-h" style="flex:${h}"></span></div>
                 <div class="gs-wp-l"><span>${this.esc(game.away.abbr || game.away.name)} ${a}%</span><span>${this.esc(game.home.abbr || game.home.name)} ${h}%</span></div>`;
@@ -383,7 +434,7 @@ const GameStats = {
         const sit = !hide && game.situation ? `<div class="gs-sit">${this.esc(game.situation)}</div>` : '';
         const play = !hide && game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : '';
         const canLineup = game.id && (game.sport === 'soccer' || ['ncaam', 'ncaaw', 'nba', 'nfl', 'nhl', 'mlb'].includes(game.leagueKey));
-        const canTstats = !safe && x && x.teamStats;
+        const canTstats = !hide && !!(this.tl.extra.length && this.tl.extra[this.tl.extra.length - 1].data.teamStats);
         top.innerHTML = `
             <div class="gs-head" title="Drag to move \u00b7 double-click to reset"><span class="gs-league">${this.esc(game.league)}</span>
               <span class="gs-mini">${this.esc(game.away.abbr || game.away.name)} ${sc(game.away.score)}\u2013${sc(game.home.score)} ${this.esc(game.home.abbr || game.home.name)}</span>
@@ -426,15 +477,20 @@ const GameStats = {
         if (!game || !game.id) return;
         clearTimeout(this.extraTimer);
         let extra = null;
+        const t0 = Date.now();
         try {
             const res = await fetch('/api/gamestats/extra?league=' + encodeURIComponent(game.leagueKey) + '&event=' + encodeURIComponent(game.id), { credentials: 'same-origin' });
             if (res.ok) extra = (await res.json()).extra;
         } catch (_) { /* optional */ }
         if (!this.game || this.game.id !== game.id) return;
+        this.record('extra', extra, t0);
         this.extra = extra;
+        this.seen.extra = this.delayed('extra').snap;
         this.paintTop(this.game);
         this.renderTstats();
-        this.extraTimer = setTimeout(() => this.loadExtra(), this.EXTRA_MS);
+        // With a spoiler delay the lineups and player stats are collected in the background too, so they can be shown as they were.
+        if (this.settings.delay > 0) { this.fetchLineups(game); this.fetchPlayers(game); }
+        this.extraTimer = setTimeout(() => this.loadExtra(), this.settings.delay > 0 ? this.POLL_FAST_MS + 2000 : this.EXTRA_MS);
     },
 
     toggleTstats() {
@@ -449,11 +505,10 @@ const GameStats = {
     renderTstats() {
         const box = this.el && this.el.querySelector('.gs-tstats');
         if (!box || box.hidden) return;
-        const t = this.extra && this.extra.teamStats;
-        if (!t || this.spoilerSafe()) {
-            box.innerHTML = `<div class="gs-empty">${this.spoilerSafe() ? 'Hidden by spoiler guard' : 'Team stats not available yet'}</div>`;
-            return;
-        }
+        const r = this.delayed('extra');
+        const t = r.data && r.data.teamStats;
+        if (this.settings.hideScores) { box.innerHTML = '<div class="gs-empty">Hidden by spoiler guard</div>'; return; }
+        if (!t) { box.innerHTML = r.pend ? this.syncingNote() : '<div class="gs-empty">Team stats not available yet</div>'; return; }
         box.innerHTML = `<div class="gs-ts-r gs-ts-h"><b>${this.esc(t.away)}</b><span></span><b>${this.esc(t.home)}</b></div>`
             + t.rows.map((r) => `<div class="gs-ts-r"><b>${this.esc(r.away)}</b><span>${this.esc(r.label)}</span><b>${this.esc(r.home)}</b></div>`).join('');
     },
@@ -479,8 +534,10 @@ const GameStats = {
             this.shown = undefined;       // force a repaint with the new rules
             this.refreshView();
             if (this.game) { this.paintTop(this.game); this.renderTstats(); }
-            if (this.lineupsOpen) this.loadLineups();
-            if (this.selected) this.runSearch();
+            this.seen = {};
+            if (this.game) this.loadExtra(this.game);   // also (re)starts background collection for the delay
+            if (this.lineupsOpen) this.renderLineups();
+            if (this.query.trim()) this.runSearch();
             if (this.live) this.tick();   // re-time polling for the new delay
         });
     },
@@ -642,33 +699,49 @@ const GameStats = {
         clearTimeout(this.lineupTimer);
     },
 
-    async loadLineups() {
-        const game = this.game;
-        const box = this.el && this.el.querySelector('.gs-cols');
-        if (!game || !box) return;
-        let data = null;
+    async fetchLineups(game) {
+        if (!this.stale('lineups', this.settings.delay > 0 ? 8000 : 20000)) return;
+        const t0 = Date.now();
         try {
             const q = 'league=' + encodeURIComponent(game.leagueKey) + '&event=' + encodeURIComponent(game.id);
             const res = await fetch('/api/gamestats/lineups?' + q, { credentials: 'same-origin' });
-            if (res.ok) data = (await res.json()).lineups;
+            if (res.ok && this.game && this.game.id === game.id) this.record('lineups', (await res.json()).lineups, t0);
         } catch (_) { /* optional */ }
+    },
+
+    async loadLineups() {
+        const game = this.game;
+        if (!game || !this.el) return;
+        await this.fetchLineups(game);
         if (!this.game || game.id !== this.game.id || !this.lineupsOpen) return;
-        const safe = this.spoilerSafe();
+        this.renderLineups();
+        clearTimeout(this.lineupTimer);
+        this.lineupTimer = setTimeout(() => this.loadLineups(), 30000);
+    },
+
+    renderLineups() {
+        const box = this.el && this.el.querySelector('.gs-cols');
+        if (!box) return;
+        const r = this.delayed('lineups');
+        this.seen.lineups = r.snap;
+        const hide = this.settings.hideScores;
+        const data = r.data;
         const teams = (data && data.teams) || [];
-        if (!teams.length || !teams.some((t) => t.starters.length)) {
+        if (r.pend) {
+            box.innerHTML = this.syncingNote();
+        } else if (!teams.length || !teams.some((t) => t.starters.length)) {
             box.innerHTML = '<div class="gs-empty">Lineups not posted yet</div>';
         } else {
-            // Live numbers and substitutions would spoil a delayed stream, so the spoiler guard shows names only.
-            const p = (x) => `<div class="gs-p${!safe && x.out ? ' out' : ''}${!safe && x.in ? ' in' : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(safe ? x.pos : (x.stat || x.pos))}</em></div>`;
+            // Hide scores: names only. A spoiler delay shows the stats as they were `delay` seconds ago instead.
+            const p = (x) => `<div class="gs-p${!hide && x.out ? ' out' : ''}${!hide && x.in ? ' in' : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(hide ? x.pos : (x.stat || x.pos))}</em></div>`;
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
                 ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x)).join('')}
                 ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x)).join('')}` : ''}</div>`;
             box.innerHTML = teams.map(col).join('')
                 + (data.note ? `<div class="gs-note">${this.esc(data.note)}</div>` : '')
-                + (safe ? '<div class="gs-note">Live stats hidden by the spoiler guard.</div>' : '');
+                + (hide ? '<div class="gs-note">Live stats hidden by the spoiler guard.</div>' : '')
+                + (!hide && this.settings.delay > 0 ? `<div class="gs-note">Shown ${this.settings.delay}s behind live.</div>` : '');
         }
-        clearTimeout(this.lineupTimer);
-        this.lineupTimer = setTimeout(() => this.loadLineups(), 30000);
     },
 
     // ---- Player search: type a name or jersey number, click a result for that player's stats ----
@@ -687,15 +760,14 @@ const GameStats = {
         if (this.query) this.runSearch();
     },
 
-    async ensurePlayers() {
-        const game = this.game;
-        if (this.playersData && Date.now() - this.playersAt < 30000) return this.playersData;
+    async fetchPlayers(game) {
+        if (!this.stale('players', this.settings.delay > 0 ? 8000 : 20000)) return;
+        const t0 = Date.now();
         try {
             const q = 'league=' + encodeURIComponent(game.leagueKey) + '&event=' + encodeURIComponent(game.id);
             const res = await fetch('/api/gamestats/players?' + q, { credentials: 'same-origin' });
-            if (res.ok) { this.playersData = (await res.json()).players; this.playersAt = Date.now(); }
+            if (res.ok && this.game && this.game.id === game.id) this.record('players', (await res.json()).players, t0);
         } catch (_) { /* optional */ }
-        return this.game && game.id === this.game.id ? this.playersData : null;
     },
 
     norm(v) {
@@ -707,8 +779,12 @@ const GameStats = {
         if (!out) return;
         const raw = this.query.trim().replace(/^#/, '');
         if (!raw) { out.innerHTML = ''; return; }
-        const data = await this.ensurePlayers();
+        if (this.game) await this.fetchPlayers(this.game);
         if (!this.el || !out.isConnected) return;
+        const r = this.delayed('players');
+        this.seen.players = r.snap;
+        const data = r.data;
+        if (r.pend) { out.innerHTML = this.syncingNote(); return; }
         const all = ((data && data.teams) || []).flatMap((t) => t.players.map((p) => ({ ...p, team: t.name })));
         const q = this.norm(raw);
         const hits = (/^\d+$/.test(q) ? all.filter((p) => String(p.num) === q) : all.filter((p) => this.norm(p.name).includes(q))).slice(0, 8);
@@ -729,7 +805,7 @@ const GameStats = {
     card(p) {
         const kv = (arr) => arr.map(([l, v]) => `<div class="gs-kv"><b>${this.esc(v)}</b><span>${this.esc(l)}</span></div>`).join('');
         const groups = (p.groups || []).filter((g) => g.stats.length);
-        const body = this.spoilerSafe()
+        const body = this.settings.hideScores
             ? '<div class="gs-empty">This game\u2019s stats are hidden by the spoiler guard</div>'
             : groups.length ? groups.map((g) => `<h5>${this.esc(g.title)}</h5><div class="gs-kvs">${kv(g.stats)}</div>`).join('') : '<div class="gs-empty">No stats in this game yet</div>';
         return `<div class="gs-card"><div class="gs-card-h"><b>${p.num ? '#' + this.esc(p.num) + ' ' : ''}${this.esc(p.name)}</b>

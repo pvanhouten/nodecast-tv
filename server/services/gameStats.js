@@ -470,7 +470,7 @@ async function gameById(leagueKey, eventId) {
 }
 
 // ---- Lineups -------------------------------------------------------------------------------------
-const LINEUP_CACHE_MS = 30_000;
+const LINEUP_CACHE_MS = 10_000;   // matches the scoreboard cache; a spoiler delay needs fine-grained snapshots
 const lineupCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
 
 function soccerTeams(summary) {
