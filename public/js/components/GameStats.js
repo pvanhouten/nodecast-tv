@@ -68,6 +68,24 @@ const STAT_GLOSSARY = {
     }
 };
 
+// Labels used by the Team stats panel (same tooltip lookup as the player stats above).
+Object.assign(STAT_GLOSSARY.football, {
+    'Total yds': ['Total yards', 'Yards gained by the offense, passing plus rushing.'], 'Pass yds': ['Net passing yards', 'Passing yards after subtracting yards lost to sacks.'],
+    'Rush yds': ['Rushing yards', 'Yards gained on running plays.'], '1st downs': ['First downs', 'Times the offense earned a fresh set of four downs.'],
+    '3rd down': ['Third-down conversions', 'Third downs converted into a first down, made / attempted.'], Turnovers: ['Turnovers', 'Interceptions plus lost fumbles: possessions given to the other team.'],
+    Possession: ['Time of possession', 'How long each team held the ball.']
+});
+Object.assign(STAT_GLOSSARY.hockey, {
+    Shots: ['Shots on goal', 'Shots that reached the goalie or went in.'], Hits: ['Hits', 'Body checks on opponents.'], Blocks: ['Blocked shots', 'Opponent shots stopped by a skater before they reach the goalie.'],
+    'PP goals': ['Power-play goals', 'Goals scored while the other team had a player in the penalty box.'], Takeaways: ['Takeaways', 'Times a team took the puck from the other team.'],
+    Giveaways: ['Giveaways', 'Times a team lost the puck to the other team.']
+});
+Object.assign(STAT_GLOSSARY.soccer, {
+    Possession: ['Possession', 'Share of the match each team had the ball.'], Shots: ['Total shots', 'All shots, including blocked and off target.'], 'On target': ['Shots on target', 'Shots that would have scored without a save or block.'],
+    Corners: ['Corner kicks', 'Set pieces awarded when the defense puts the ball out over its own goal line.'], Fouls: ['Fouls', 'Fouls committed by the team.'], Yellow: ['Yellow cards', 'Cautions.'],
+    Red: ['Red cards', 'Sending-offs: the team plays a player short.'], Offsides: ['Offsides', 'Times a player was caught ahead of the last defender when the ball was played.'], Saves: ['Saves', 'Shots stopped by the goalkeeper.']
+});
+
 const GameStats = {
     POLL_MS: 15000,
     POLL_FAST_MS: 8000,   // used while a spoiler delay is set so delayed snapshots have fine granularity
@@ -570,7 +588,7 @@ const GameStats = {
         if (this.settings.hideScores) { box.innerHTML = '<div class="gs-empty">Hidden by spoiler guard</div>'; return; }
         if (!t) { box.innerHTML = r.pend ? this.syncingNote() : '<div class="gs-empty">Team stats not available yet</div>'; return; }
         box.innerHTML = `<div class="gs-ts-r gs-ts-h"><b>${this.esc(t.away)}</b><span></span><b>${this.esc(t.home)}</b></div>`
-            + t.rows.map((r) => `<div class="gs-ts-r"><b>${this.esc(r.away)}</b><span>${this.esc(r.label)}</span><b>${this.esc(r.home)}</b></div>`).join('');
+            + t.rows.map((r) => `<div class="gs-ts-r"><b>${this.esc(r.away)}</b><span${this.statTip(r.label)}>${this.esc(r.label)}</span><b>${this.esc(r.home)}</b></div>`).join('');
     },
 
     // ---- Settings ----
@@ -1043,7 +1061,7 @@ const GameStats = {
 .gs-card-x{flex:none;width:20px;height:20px;padding:0;border:0;border-radius:5px;background:rgba(255,255,255,.1);color:#fff;font-size:14px;line-height:1;cursor:pointer;align-self:center}.gs-card-x:hover{background:rgba(255,255,255,.24)}.gs-card-h em{font-style:normal;font-size:11px;opacity:.6}
 .gs-card h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
 .gs-kvs{display:flex;flex-wrap:wrap;gap:4px 10px}
-.gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}.gs-kv span.gs-tip{cursor:help;text-decoration:underline dotted rgba(255,255,255,.4);text-underline-offset:2px}
+.gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}.gs-kv span.gs-tip,.gs-ts-r span.gs-tip{cursor:help;text-decoration:underline dotted rgba(255,255,255,.4);text-underline-offset:2px}
 .gs-tooltip{position:absolute;z-index:30;max-width:240px;padding:8px 10px;border-radius:8px;pointer-events:none;
   background:rgba(8,10,16,.96);border:1px solid rgba(255,255,255,.18);box-shadow:0 6px 20px rgba(0,0,0,.5);color:#fff;font:12px/1.4 Inter,system-ui,sans-serif}
 .gs-tooltip[hidden]{display:none}
