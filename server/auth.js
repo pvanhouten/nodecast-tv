@@ -16,7 +16,18 @@ const crypto = require('node:crypto');
 
 // JWT Secret - In production, use environment variable
 const JWT_SECRET = security.jwtSecret;
-const JWT_EXPIRY = '24h';
+
+// How long a browser login lasts. AUTH_SESSION_DAYS (1-365) lengthens it; when it is set, a login that is used
+// is also renewed once it is past half of its lifetime, so regular use never hits the limit. Unset = 24 h, no renewal.
+function sessionSettings(env = process.env) {
+    const raw = env.AUTH_SESSION_DAYS;
+    const days = Number(raw);
+    const custom = raw !== undefined && raw !== '' && Number.isFinite(days) && days >= 1 && days <= 365;
+    const seconds = Math.round((custom ? days : 1) * 24 * 60 * 60);
+    return { seconds, renew: custom };
+}
+const SESSION = sessionSettings();
+const JWT_EXPIRY = SESSION.seconds;
 
 /**
  * Hash password using bcrypt
@@ -247,8 +258,21 @@ function requireAuth(req, res, next) {
         if (error) return next(error);
         if (!user) return res.status(401).json({ error: 'Authentication required' });
         req.user = req.authenticatedUser = user;
+        renewCookieToken(req, res);
         next();
     })(req, res, next);
+}
+
+// Sliding session (only with AUTH_SESSION_DAYS set): hand a browser a fresh token once its cookie is past half-life.
+function renewCookieToken(req, res, now = Date.now() / 1000) {
+    if (!SESSION.renew || ExtractJwt.fromAuthHeaderAsBearerToken()(req) || res.headersSent) return;
+    const token = extractToken(req);
+    const old = token && jwt.decode(token);
+    if (!old || !old.exp || !old.iat || old.kind !== 'access') return;
+    if (old.exp - now > (old.exp - old.iat) / 2) return;
+    const fresh = jwt.sign({ id: old.id, username: old.username, role: old.role, authVersion: old.authVersion || 0, kind: 'access' },
+        JWT_SECRET, { expiresIn: JWT_EXPIRY, algorithm: 'HS256', audience: 'nodecast-tv', jwtid: crypto.randomUUID() });
+    setAuthCookie(req, res, fresh);
 }
 
 function extractToken(req) {
@@ -268,7 +292,7 @@ function cookieOptions(req) {
         || (process.env.AUTH_COOKIE_SECURE !== 'false' && Boolean(req.secure)), path: '/' };
 }
 function setAuthCookie(req, res, token) {
-    res.cookie(security.authCookieName, token, { ...cookieOptions(req), maxAge: 24 * 60 * 60 * 1000 });
+    res.cookie(security.authCookieName, token, { ...cookieOptions(req), maxAge: SESSION.seconds * 1000 });
 }
 function clearAuthCookie(req, res) {
     res.clearCookie(security.authCookieName, cookieOptions(req));
@@ -319,6 +343,8 @@ module.exports = {
     configureSessionSerialization,
     configureOidcStrategy,
     requireAuth,
+    sessionSettings,
+    renewCookieToken,
     extractToken,
     setAuthCookie,
     clearAuthCookie,
