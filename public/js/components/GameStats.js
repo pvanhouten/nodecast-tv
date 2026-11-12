@@ -12,6 +12,62 @@
  *  - Auto-minimizes when a game you were watching ends; fades when the player's controls hide.
  * Position, minimized state and settings are remembered in localStorage.
  */
+// Plain-English meaning of stat abbreviations, per sport: [full name, what it means]. Shown as a tooltip on a stat label;
+// anything not listed here falls back to the description ESPN sends with the stat.
+const STAT_GLOSSARY = {
+    basketball: {
+        MIN: ['Minutes', 'Time on the court.'], PTS: ['Points', 'Total points scored.'],
+        FG: ['Field goals', 'Shots made / attempted, not counting free throws.'], '3PT': ['Three-pointers', 'Shots from behind the arc, made / attempted.'],
+        '3P': ['Three-pointers', 'Shots from behind the arc, made / attempted.'], FT: ['Free throws', 'Uncontested shots after a foul, made / attempted.'],
+        REB: ['Rebounds', 'Missed shots grabbed (offensive + defensive).'], OREB: ['Offensive rebounds', 'Rebounds of a teammate\'s miss: a second chance to score.'],
+        DREB: ['Defensive rebounds', 'Rebounds of an opponent\'s miss: ends their possession.'], AST: ['Assists', 'Passes that lead directly to a made basket.'],
+        TO: ['Turnovers', 'Times the player lost the ball to the other team.'], STL: ['Steals', 'Times the player took the ball from the other team.'],
+        BLK: ['Blocks', 'Opponent shots knocked away.'], PF: ['Personal fouls', 'Fouls committed (six disqualifies a player in the NBA, five in college).'],
+        '+/-': ['Plus/minus', 'How much the team outscored the opponent while this player was on the court.'],
+        'FG%': ['Field goal percentage', 'Share of field goal attempts made.'], '3P%': ['Three-point percentage', 'Share of three-point attempts made.'],
+        'FT%': ['Free throw percentage', 'Share of free throws made.'], GP: ['Games played', 'Games the player appeared in.']
+    },
+    football: {
+        'C/ATT': ['Completions / attempts', 'Passes caught by a teammate out of passes thrown.'], YDS: ['Yards', 'Total yards gained.'], AVG: ['Average', 'Yards per attempt, carry or catch.'],
+        TD: ['Touchdowns', 'Scores worth 6 points.'], INT: ['Interceptions', 'Passes thrown that the defense caught (offense) or caught by this player (defense).'],
+        SACKS: ['Sacks', 'Times the quarterback was tackled behind the line (passing: sacks taken-yards lost).'], QBR: ['Total QBR', 'ESPN rating of a quarterback\'s overall contribution, 0-100.'],
+        RTG: ['Passer rating', 'Formula rating of passing efficiency (158.3 is perfect).'], CAR: ['Carries', 'Running plays.'], LONG: ['Longest play', 'Longest single gain.'],
+        REC: ['Receptions', 'Passes caught.'], TGTS: ['Targets', 'Times a pass was thrown to this player.'], FUM: ['Fumbles', 'Times the player lost control of the ball.'],
+        LOST: ['Fumbles lost', 'Fumbles the other team recovered.'], FR: ['Fumble recoveries', 'Loose balls recovered.'], TOT: ['Total tackles', 'Solo plus assisted tackles.'],
+        SOLO: ['Solo tackles', 'Tackles made without help.'], TFL: ['Tackles for loss', 'Tackles behind the line of scrimmage.'], PD: ['Passes defended', 'Passes broken up or deflected.'],
+        'QB HTS': ['QB hits', 'Hits on the quarterback as or after he throws.'], FG: ['Field goals', 'Kicks made / attempted.'], XP: ['Extra points', 'Kicks after a touchdown, made / attempted.'],
+        PCT: ['Percentage', 'Share made.'], NO: ['Number', 'How many (punts, returns).'], 'In 20': ['Punts inside the 20', 'Punts downed inside the opponent\'s 20-yard line.'],
+        TB: ['Touchbacks', 'Kicks that reached the end zone and were not returned.'], PTS: ['Points', 'Total points scored.']
+    },
+    hockey: {
+        G: ['Goals', 'Pucks in the net.'], A: ['Assists', 'Passes leading to a goal (up to two per goal).'], S: ['Shots', 'Shots on goal.'], SM: ['Missed shots', 'Shots that missed the net.'],
+        SOG: ['Shootout goals', 'Goals scored in a shootout.'], BS: ['Blocked shots', 'Opponent shots blocked by this player.'], HT: ['Hits', 'Body checks on opponents.'],
+        TK: ['Takeaways', 'Times the player took the puck from an opponent.'], GV: ['Giveaways', 'Times the player lost the puck to an opponent.'],
+        '+/-': ['Plus/minus', 'Goals for minus goals against while this player was on the ice (even strength).'], TOI: ['Time on ice', 'Total minutes played.'],
+        PPTOI: ['Power-play time on ice', 'Minutes played while their team had a man advantage.'], SHTOI: ['Short-handed time on ice', 'Minutes played while their team was a man down.'],
+        ESTOI: ['Even-strength time on ice', 'Minutes played with equal players.'], SHFT: ['Shifts', 'Times the player went on the ice.'], FW: ['Faceoffs won', 'Faceoffs won.'],
+        FL: ['Faceoffs lost', 'Faceoffs lost.'], 'FO%': ['Faceoff percentage', 'Share of faceoffs won.'], PN: ['Penalties', 'Penalties taken.'], PIM: ['Penalty minutes', 'Minutes spent in the penalty box.'],
+        YTDG: ['Goals this season', 'Season goal total.'], SA: ['Shots against', 'Shots the goalie faced.'], GA: ['Goals against', 'Goals the goalie allowed.'], SV: ['Saves', 'Shots stopped.'],
+        'SV%': ['Save percentage', 'Share of shots stopped.'], ESSV: ['Even-strength saves', 'Saves with equal players.'], PPSV: ['Power-play saves', 'Saves while the opponent had a man advantage.'],
+        SHSV: ['Short-handed saves', 'Saves while the goalie\'s team was a man down.']
+    },
+    baseball: {
+        'H-AB': ['Hits - at bats', 'Hits out of official at bats.'], AB: ['At bats', 'Official turns at the plate (walks and sacrifices excluded).'], R: ['Runs', 'Times the player scored (batting) or runs allowed (pitching).'],
+        H: ['Hits', 'Times the batter reached base on a batted ball (or hits allowed by a pitcher).'], RBI: ['Runs batted in', 'Runs that scored because of this player\'s at bat.'], HR: ['Home runs', 'Hits over the fence.'],
+        BB: ['Walks', 'Four balls: the batter takes first base.'], K: ['Strikeouts', 'Three strikes: the batter is out.'], '#P': ['Pitches seen', 'Pitches thrown to this batter.'],
+        AVG: ['Batting average', 'Hits divided by at bats.'], OBP: ['On-base percentage', 'How often the batter reaches base.'], SLG: ['Slugging percentage', 'Total bases per at bat: rewards extra-base hits.'],
+        OPS: ['On-base plus slugging', 'OBP + SLG: overall hitting value.'], IP: ['Innings pitched', 'Innings a pitcher covered (.1 = one out, .2 = two outs).'], ER: ['Earned runs', 'Runs allowed that were not due to fielding errors.'],
+        'PC-ST': ['Pitches - strikes', 'Pitches thrown and how many were strikes.'], PC: ['Pitch count', 'Pitches thrown.'], ERA: ['Earned run average', 'Earned runs allowed per nine innings.'],
+        WHIP: ['Walks + hits per inning', 'Baserunners a pitcher allows per inning.'], W: ['Wins', 'Games credited as a win.'], L: ['Losses', 'Games charged as a loss.'], SV: ['Saves', 'Games finished while protecting a narrow lead.'],
+        GP: ['Games played', 'Games appeared in.']
+    },
+    soccer: {
+        G: ['Goals', 'Goals scored.'], A: ['Assists', 'Passes leading directly to a goal.'], SH: ['Shots', 'Shots taken.'], ST: ['Shots on target', 'Shots that would have scored without a save or block.'],
+        FC: ['Fouls committed', 'Fouls given away.'], FA: ['Fouls suffered', 'Times the player was fouled.'], OF: ['Offsides', 'Times caught in an offside position.'], SV: ['Saves', 'Shots stopped by the goalkeeper.'],
+        YC: ['Yellow cards', 'Cautions.'], RC: ['Red cards', 'Sending-offs.'], GA: ['Goals against', 'Goals conceded by the goalkeeper.'], OG: ['Own goals', 'Goals scored into the player\'s own net.']
+    }
+};
+
 const GameStats = {
     POLL_MS: 15000,
     POLL_FAST_MS: 8000,   // used while a spoiler delay is set so delayed snapshots have fine granularity
@@ -337,6 +393,7 @@ const GameStats = {
                 else if (hit('.gs-lineups-btn')) this.toggleLineups();
             });
             this.bindDrag();
+            this.bindTips();
             host.appendChild(this.el);
             if (window.ResizeObserver) new ResizeObserver(() => this.applyPos()).observe(this.el);
             const controls = document.getElementById('player-controls-overlay');
@@ -802,8 +859,46 @@ const GameStats = {
         }));
     },
 
+    // Tooltip data for a stat label: full name + what it means (own glossary first, then ESPN's description).
+    statTip(label, espnDesc) {
+        const g = (STAT_GLOSSARY[this.game && this.game.sport] || {})[label];
+        const name = g ? g[0] : label;
+        const desc = g ? g[1] : (espnDesc || '');
+        if (!g && !espnDesc) return '';
+        return ` class="gs-tip" data-abbr="${this.esc(label)}" data-name="${this.esc(name)}" data-desc="${this.esc(desc)}"`;
+    },
+
+    // One floating tooltip, kept outside the (scrolling) overlay so it is never clipped, and inside the video container so it
+    // also shows in fullscreen. Mouse: hover. Touch: tap the label (tap anywhere else to close).
+    bindTips() {
+        const tip = document.createElement('div');
+        tip.className = 'gs-tooltip';
+        tip.hidden = true;
+        this.container().appendChild(tip);
+        this.tipEl = tip;
+        const show = (target) => {
+            const abbr = target.dataset.abbr, name = target.dataset.name, desc = target.dataset.desc;
+            tip.innerHTML = `<div class="gs-tt-h"><b>${this.esc(name)}</b>${abbr && abbr !== name ? `<em>${this.esc(abbr)}</em>` : ''}</div>${desc ? `<div class="gs-tt-d">${this.esc(desc)}</div>` : ''}`;
+            tip.hidden = false;
+            const host = this.container().getBoundingClientRect();
+            const r = target.getBoundingClientRect();
+            const w = tip.offsetWidth, h = tip.offsetHeight;
+            let x = r.left - host.left + r.width / 2 - w / 2;
+            x = Math.max(6, Math.min(x, host.width - w - 6));
+            let y = r.bottom - host.top + 8;             // below the label (the value sits above it) ...
+            if (y + h > host.height - 6) y = r.top - host.top - h - 8 - 14;  // ... or above, clear of the value, when there is no room
+            tip.style.left = Math.round(x) + 'px';
+            tip.style.top = Math.round(y) + 'px';
+        };
+        const hide = () => { tip.hidden = true; };
+        this.el.addEventListener('mouseover', (e) => { const t = e.target.closest('.gs-tip'); if (t) show(t); });
+        this.el.addEventListener('mouseout', (e) => { if (e.target.closest('.gs-tip')) hide(); });
+        this.el.addEventListener('click', (e) => { const t = e.target.closest('.gs-tip'); if (t) show(t); else hide(); });
+        this.el.addEventListener('scroll', hide);
+    },
+
     card(p) {
-        const kv = (arr) => arr.map(([l, v]) => `<div class="gs-kv"><b>${this.esc(v)}</b><span>${this.esc(l)}</span></div>`).join('');
+        const kv = (arr) => arr.map(([l, v, d]) => `<div class="gs-kv"><b>${this.esc(v)}</b><span${this.statTip(l, d)}>${this.esc(l)}</span></div>`).join('');
         const groups = (p.groups || []).filter((g) => g.stats.length);
         const body = this.settings.hideScores
             ? '<div class="gs-empty">This game\u2019s stats are hidden by the spoiler guard</div>'
@@ -828,7 +923,7 @@ const GameStats = {
         }
         const s = this.seasonCache[key];
         if (!s || this.selected !== p.id || !host.isConnected) return;
-        host.innerHTML = `<h5>Season \u00b7 ${this.esc(String(s.title).replace(/career stats/i, '').trim())} ${this.esc(s.split)}</h5><div class="gs-kvs">${s.labels.map((l, i) => `<div class="gs-kv"><b>${this.esc(s.values[i])}</b><span>${this.esc(l)}</span></div>`).join('')}</div>`;
+        host.innerHTML = `<h5>Season \u00b7 ${this.esc(String(s.title).replace(/career stats/i, '').trim())} ${this.esc(s.split)}</h5><div class="gs-kvs">${s.labels.map((l, i) => `<div class="gs-kv"><b>${this.esc(s.values[i])}</b><span${this.statTip(l)}>${this.esc(l)}</span></div>`).join('')}</div>`;
     },
 
     esc(v) {
@@ -905,7 +1000,13 @@ const GameStats = {
 .gs-card-h{display:flex;justify-content:space-between;gap:8px;margin-bottom:2px}.gs-card-h em{font-style:normal;font-size:11px;opacity:.6}
 .gs-card h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
 .gs-kvs{display:flex;flex-wrap:wrap;gap:4px 10px}
-.gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}
+.gs-kv{display:flex;flex-direction:column;align-items:center;min-width:34px}.gs-kv b{font-size:13px;font-variant-numeric:tabular-nums}.gs-kv span{font-size:9px;opacity:.55}.gs-kv span.gs-tip{cursor:help;text-decoration:underline dotted rgba(255,255,255,.4);text-underline-offset:2px}
+.gs-tooltip{position:absolute;z-index:30;max-width:240px;padding:8px 10px;border-radius:8px;pointer-events:none;
+  background:rgba(8,10,16,.96);border:1px solid rgba(255,255,255,.18);box-shadow:0 6px 20px rgba(0,0,0,.5);color:#fff;font:12px/1.4 Inter,system-ui,sans-serif}
+.gs-tooltip[hidden]{display:none}
+.gs-tt-h{display:flex;align-items:baseline;gap:8px}.gs-tt-h b{font-size:13px}
+.gs-tt-h em{font-style:normal;font-size:10px;font-weight:600;letter-spacing:.04em;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.14)}
+.gs-tt-d{margin-top:3px;opacity:.8}
 .gs-col{flex:1;min-width:150px}
 .gs-col h4{margin:0 0 4px;font-size:12px}.gs-col h4 small{opacity:.6;font-weight:400}
 .gs-col h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}

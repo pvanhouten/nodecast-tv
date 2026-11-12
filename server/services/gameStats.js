@@ -507,6 +507,11 @@ function basketballTeams(summary) {
     });
 }
 
+// [label, value] plus ESPN's own description of the stat when it has one (shown as a tooltip by the overlay).
+function withDesc(pair, desc) {
+    return desc && String(desc).trim() ? [...pair, String(desc).trim()] : pair;
+}
+
 // Every player in a box score with their stat groups. Works for basketball, NFL, NHL and MLB
 // (boxscore.players[team].statistics[category].athletes[]); soccer comes from rosters[].roster[].stats.
 function boxPlayers(summary, sport) {
@@ -519,7 +524,7 @@ function boxPlayers(summary, sport) {
                     id: String(p.athlete?.id || ''), num: p.jersey || '', name: p.athlete?.displayName || '',
                     pos: p.position?.abbreviation || '', starter: !!p.starter,
                     groups: [{ title: 'This match', stats: (p.stats || []).filter((x) => x.displayValue && x.displayValue !== '0')
-                        .map((x) => [x.shortDisplayName || x.abbreviation || x.displayName, x.displayValue]) }]
+                        .map((x) => withDesc([x.shortDisplayName || x.abbreviation || x.displayName, x.displayValue], x.displayName || x.description)) }]
                 }))
             });
         }
@@ -542,7 +547,7 @@ function boxPlayers(summary, sport) {
                         starter: !!a.starter, unit: title, groups: [] };
                     byId.set(id, p);
                 }
-                p.groups.push({ title, stats: (block.labels || []).map((l, i) => [l, (a.stats || [])[i]]).filter(([, v]) => v != null && v !== '') });
+                p.groups.push({ title, stats: (block.labels || []).map((l, i) => withDesc([l, (a.stats || [])[i]], (block.descriptions || [])[i])).filter(([, v]) => v != null && v !== '') });
             }
         });
         teams.push({ homeAway: compOf(t.team?.id)?.homeAway || '', name: t.team?.shortDisplayName || t.team?.displayName || '', players: [...byId.values()] });
