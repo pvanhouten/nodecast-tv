@@ -1040,7 +1040,7 @@ const GameStats = {
 .gs-rec{font-size:11px;opacity:.55}
 .gs-score{min-width:28px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
 .gs-sit{margin-top:4px;font-size:11px;font-weight:600;color:#ffd166}
-.gs-events{margin-top:4px;font-size:11px;max-height:92px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}.gs-events em{font-style:normal;opacity:.55}
+.gs-events{margin-top:4px;font-size:11px;max-height:120px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}.gs-events em{font-style:normal;opacity:.55}
 .gs-line{margin-top:3px;font-size:10px;opacity:.65}
 .gs-wp{display:flex;height:5px;margin-top:6px;border-radius:3px;overflow:hidden;background:rgba(255,255,255,.12)}
 .gs-wp-a{background:#6ea8fe}.gs-wp-h{background:#f0883e}
