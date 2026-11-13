@@ -167,6 +167,22 @@ const API = {
     transcode: {
         getSessions: () => API.request('GET', '/transcode/sessions'),
         stopSession: (id) => API.request('DELETE', `/transcode/${id}`)
+    },
+
+    // Two-factor authentication (TOTP)
+    auth: {
+        totp: {
+            status: () => API.request('GET', '/auth/2fa/status'),
+            setup: () => API.request('GET', '/auth/2fa/setup'),
+            enable: (code) => API.request('POST', '/auth/2fa/enable', { code }),
+            disable: (password) => API.request('POST', '/auth/2fa/disable', { password }),
+            // Admin: manage 2FA for any user
+            adminStatus: (userId) => API.request('GET', `/auth/users/${userId}/2fa/status`),
+            adminSetup: (userId) => API.request('GET', `/auth/users/${userId}/2fa/setup`),
+            adminEnable: (userId, code) => API.request('POST', `/auth/users/${userId}/2fa/enable`, { code }),
+            adminDisable: (userId) => API.request('DELETE', `/auth/users/${userId}/2fa`),
+            adminReset: (userId) => API.request('POST', `/auth/users/${userId}/2fa/reset`)
+        }
     }
 };
 
