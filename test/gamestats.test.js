@@ -331,3 +331,18 @@ test('NCAA football covers both FBS and FCS feeds (ESPN splits them by group)', 
     assert.equal(findGame('NCAA Football Southern Utah at Portland State',
         [ev(team('Southern Utah', 'Thunderbirds'), team('Portland State', 'Vikings'))], f[1]).away.name, 'Portland State');
 });
+
+test('college football lineup: players who have played by unit, rest of roster below; roster only before kickoff', () => {
+    const roster = [
+        { id: '1', num: '12', name: 'Q Back', pos: 'QB' }, { id: '2', num: '80', name: 'W Receiver', pos: 'WR' },
+        { id: '3', num: '55', name: 'L Backer', pos: 'LB' }, { id: '4', num: '3', name: 'K Icker', pos: 'K' }, { id: '5', num: '70', name: 'O Lineman', pos: 'OL' }
+    ];
+    const lu = gs.collegeTeamLineup([{ id: '3', num: '55', name: 'L Backer', pos: 'LB' }, { id: '1', num: '12', name: 'Q Back', pos: 'QB' }], roster);
+    assert.deepEqual(lu.starters.map((p) => [p.unit, p.name]), [['Offense', 'Q Back'], ['Defense', 'L Backer']]);
+    assert.deepEqual(lu.bench.map((p) => p.name), ['O Lineman', 'W Receiver', 'K Icker'].sort((a, b) => 0) && ['W Receiver', 'O Lineman', 'K Icker']);
+    assert.equal(lu.rosterOnly, false);
+    const pre = gs.collegeTeamLineup([], roster);
+    assert.equal(pre.rosterOnly, true);
+    assert.deepEqual(pre.starters.map((p) => p.unit + ':' + p.pos), ['Offense:QB', 'Offense:WR', 'Offense:OL', 'Defense:LB', 'Special teams:K']);
+    assert.equal(pre.bench.length, 0);
+});

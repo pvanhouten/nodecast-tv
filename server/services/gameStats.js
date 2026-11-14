@@ -617,6 +617,54 @@ function nflTeam(path, teamId) {
     return entry.promise;
 }
 
+// College football: ESPN has no depth chart and no starting lineup, so show who has played (box score) grouped
+// by unit, plus the rest of the roster. Before kickoff nobody has played, so the roster itself is listed.
+const COLLEGE_FOOTBALL = new Set(['ncaaf', 'ncaaf-fcs']);
+const POS_ORDER = ['QB', 'RB', 'FB', 'WR', 'TE', 'OL', 'OT', 'OG', 'C', 'T', 'G', 'DL', 'DE', 'DT', 'NT', 'LB', 'OLB', 'ILB', 'MLB', 'DB', 'CB', 'S', 'FS', 'SS', 'K', 'PK', 'P', 'LS', 'KR', 'PR', 'ATH'];
+const OFFENSE = new Set(['QB', 'RB', 'FB', 'WR', 'TE', 'OL', 'OT', 'OG', 'C', 'T', 'G']);
+const DEFENSE = new Set(['DL', 'DE', 'DT', 'NT', 'LB', 'OLB', 'ILB', 'MLB', 'DB', 'CB', 'S', 'FS', 'SS']);
+const SPECIAL = new Set(['K', 'PK', 'P', 'LS', 'KR', 'PR']);
+const unitOf = (pos) => (OFFENSE.has(pos) ? 'Offense' : DEFENSE.has(pos) ? 'Defense' : SPECIAL.has(pos) ? 'Special teams' : 'Other');
+const UNIT_ORDER = ['Offense', 'Defense', 'Special teams', 'Other'];
+const posRank = (pos) => { const i = POS_ORDER.indexOf(pos); return i < 0 ? 99 : i; };
+
+function collegeRoster(path, teamId) {
+    const key = `roster:${path}:${teamId}`;
+    const hit = teamCache.get(key);
+    if (hit && Date.now() - hit.at < TEAM_CACHE_MS) return hit.promise;
+    const entry = { at: Date.now(), promise: null };
+    entry.promise = getJson(`https://site.api.espn.com/apis/site/v2/sports/${path}/teams/${teamId}/roster`)
+        .then((r) => nflRoster(r))
+        .catch((err) => { teamCache.delete(key); console.warn(`[GameStats] roster ${key} failed: ${err.message}`); return []; });
+    teamCache.set(key, entry);
+    return entry.promise;
+}
+
+// Pure (exported for tests): played = boxPlayers() entries, roster = nflRoster() entries.
+function collegeTeamLineup(played, roster) {
+    // The box score has no position (and sometimes no number) for college players: take them from the roster by id.
+    const byId = new Map(roster.map((r) => [r.id, r]));
+    const row = (p) => { const r = byId.get(p.id) || {}; const pos = p.pos || r.pos || ''; return { unit: unitOf(pos), num: p.num || r.num || '', name: p.name, pos }; };
+    const order = (a, b) => UNIT_ORDER.indexOf(a.unit) - UNIT_ORDER.indexOf(b.unit) || posRank(a.pos) - posRank(b.pos)
+        || (parseInt(a.num, 10) || 999) - (parseInt(b.num, 10) || 999);
+    const playedRows = played.map(row).sort(order);
+    if (!playedRows.length) return { starters: roster.map(row).sort(order), bench: [], rosterOnly: true };
+    const seen = new Set(played.map((p) => p.id));
+    const rest = roster.filter((p) => !seen.has(p.id)).map(row).sort(order);
+    return { starters: playedRows, bench: rest, rosterOnly: false };
+}
+
+async function collegeLineups(league, summary) {
+    const box = boxPlayers(summary, 'football');
+    const comps = summary.header?.competitions?.[0]?.competitors || [];
+    return Promise.all(comps.map(async (c) => {
+        const played = (box.find((t) => t.homeAway === c.homeAway) || { players: [] }).players;
+        const lu = collegeTeamLineup(played, await collegeRoster(league.path, c.team?.id));
+        return { homeAway: c.homeAway || '', name: c.team?.shortDisplayName || c.team?.displayName || '', formation: '',
+            starters: lu.starters, bench: lu.bench, benchLabel: 'Rest of roster', note: lu.rosterOnly ? 'roster' : 'played' };
+    }));
+}
+
 async function nflLineups(league, summary) {
     const comps = summary.header?.competitions?.[0]?.competitors || [];
     const teams = await Promise.all(comps.map(async (c) => ({
@@ -639,9 +687,16 @@ async function lineups(leagueKey, eventId) {
     const entry = { at: Date.now(), promise: null };
     entry.promise = fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then(async (d) => (league.key === 'nfl'
-            ? { sport: 'football', note: 'Depth chart (projected starters)', teams: await nflLineups(league, d) }
-            : { sport: league.sport, teams: buildLineups(d, league.sport) }))
+        .then(async (d) => {
+            if (league.key === 'nfl') return { sport: 'football', note: 'Depth chart (projected starters)', teams: await nflLineups(league, d) };
+            if (COLLEGE_FOOTBALL.has(league.key)) {
+                const teams = await collegeLineups(league, d);
+                return { sport: 'football', teams, note: teams.length && teams.every((t) => t.note === 'roster')
+                    ? 'Roster by position: ESPN publishes no college starting lineup and nobody has played yet'
+                    : 'Players who have played so far, by unit (ESPN publishes no college starting lineup); the rest of the roster is below' };
+            }
+            return { sport: league.sport, teams: buildLineups(d, league.sport) };
+        })
         .catch((err) => {
             lineupCache.delete(key);
             console.warn(`[GameStats] lineups ${key} failed: ${err.message}`);
@@ -723,12 +778,13 @@ async function players(leagueKey, eventId) {
     entry.promise = getJson(`https://site.api.espn.com/apis/site/v2/sports/${league.path}/summary?event=${eventId}`)
         .then(async (d) => {
             const teams = boxPlayers(d, league.sport);
-            if (league.key === 'nfl') { // box score only lists players with stats; add the full roster so numbers are searchable
+            if (league.key === 'nfl' || COLLEGE_FOOTBALL.has(league.key)) { // box score only lists players with stats; add the full roster so numbers are searchable
                 const comps = d.header?.competitions?.[0]?.competitors || [];
                 for (const c of comps) {
                     const t = teams.find((x) => x.homeAway === c.homeAway) || (teams.push({ homeAway: c.homeAway, name: c.team?.shortDisplayName || '', players: [] }), teams[teams.length - 1]);
                     const have = new Set(t.players.map((p) => p.id));
-                    for (const r of (await nflTeam(league.path, c.team?.id)).roster) if (!have.has(r.id)) t.players.push({ ...r, groups: [] });
+                    const roster = league.key === 'nfl' ? (await nflTeam(league.path, c.team?.id)).roster : await collegeRoster(league.path, c.team?.id);
+                    for (const r of roster) if (!have.has(r.id)) t.players.push({ ...r, groups: [] });
                 }
             }
             return { sport: league.sport, teams };
@@ -759,4 +815,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };

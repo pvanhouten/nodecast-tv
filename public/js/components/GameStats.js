@@ -511,7 +511,7 @@ const GameStats = {
             ? `<div class="gs-events">${game.events.map((e) => `<div>${this.esc(e.min)} ${icon[e.kind] || ''} ${this.esc(e.player)} <em>${this.esc(e.team)}</em></div>`).join('')}</div>` : '';
         const sit = !hide && game.situation ? `<div class="gs-sit">${this.esc(game.situation)}</div>` : '';
         const play = !hide && game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : '';
-        const canLineup = game.id && (game.sport === 'soccer' || ['ncaam', 'ncaaw', 'nba', 'nfl', 'nhl', 'mlb'].includes(game.leagueKey));
+        const canLineup = game.id && (game.sport === 'soccer' || ['ncaam', 'ncaaw', 'nba', 'nfl', 'ncaaf', 'ncaaf-fcs', 'nhl', 'mlb'].includes(game.leagueKey));
         const canTstats = !hide && !!(this.tl.extra.length && this.tl.extra[this.tl.extra.length - 1].data.teamStats);
         const oldEv = top.querySelector('.gs-events');
         const evTop = oldEv && !(oldEv.scrollHeight - oldEv.scrollTop - oldEv.clientHeight < 6) ? oldEv.scrollTop : -1; // -1 = follow newest
@@ -818,7 +818,7 @@ const GameStats = {
             const p = (x, team) => `<div class="gs-p${!hide && x.out ? ' out' : ''}${!hide && x.in ? ' in' : ''}" data-team="${this.esc(team)}" data-name="${this.esc(x.name)}" data-num="${this.esc(x.num)}" title="Show player card"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(hide ? x.pos : (x.stat || x.pos))}</em></div>`;
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
                 ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x, t.name)).join('')}
-                ${t.bench.length ? `<h5>Bench</h5>${t.bench.map((x) => p(x, t.name)).join('')}` : ''}</div>`;
+                ${t.bench.length ? `<h5>${this.esc(t.benchLabel || 'Bench')}</h5>${t.bench.map((x) => p(x, t.name)).join('')}` : ''}</div>`;
             box.innerHTML = teams.map(col).join('')
                 + (data.note ? `<div class="gs-note">${this.esc(data.note)}</div>` : '')
                 + (hide ? '<div class="gs-note">Live stats hidden by the spoiler guard.</div>' : '')
