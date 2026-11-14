@@ -200,7 +200,7 @@ test('situation: NFL down & distance + possession; MLB count/outs/runners; nothi
     assert.equal(gs.buildSituation({ situation: { lastPlay: {} } }, 'basketball', abbr), '');
 });
 
-test('soccer events: goals and cards only, own goals/pens tagged, last 8', () => {
+test('soccer events: goals and cards only, own goals/pens tagged, none dropped', () => {
     const abbr = (id) => ({ 9: 'RMA', 7: 'AEK' }[id] || '');
     const d = (min, extra, id = '9', who = 'Player') => ({ clock: { displayValue: min }, team: { id }, athletesInvolved: [{ displayName: who }], ...extra });
     const comp = { details: [d("12'", { scoringPlay: true }, '7', 'Koita'), d("20'", { scoringPlay: false }), d("34'", { yellowCard: true }, '7'),
@@ -209,7 +209,7 @@ test('soccer events: goals and cards only, own goals/pens tagged, last 8', () =>
     assert.deepEqual(ev.map((e) => [e.min, e.kind, e.team]), [["12'", 'goal', 'AEK'], ["34'", 'yellow', 'AEK'], ["50'", 'pen', 'RMA'], ["60'", 'og', 'RMA'], ["70'", 'red', 'RMA']]);
     assert.equal(ev[0].player, 'Koita');
     const many = { details: Array.from({ length: 12 }, (_, i) => d(`${i}'`, { scoringPlay: true })) };
-    assert.equal(gs.soccerEvents(many, abbr).length, 8);
+    assert.equal(gs.soccerEvents(many, abbr).length, 12); // the overlay scrolls, so no cap: an early goal must not vanish
 });
 
 test('extra: win probability, line and team stats from a summary', () => {

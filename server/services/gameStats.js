@@ -130,7 +130,7 @@ function soccerEvents(comp, teamAbbr) {
         kind: d.redCard ? 'red' : d.yellowCard ? 'yellow' : d.ownGoal ? 'og' : d.penaltyKick ? 'pen' : 'goal',
         player: d.athletesInvolved?.[0]?.displayName || '',
         team: teamAbbr(d.team?.id)
-    })).slice(-8);
+    }));
 }
 
 function summarize(event, league, meta) {
