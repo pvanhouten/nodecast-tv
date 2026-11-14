@@ -321,3 +321,13 @@ test('players: ESPN stat descriptions ride along as a third element (only when E
     const [t] = gs.boxPlayers(summary, 'basketball');
     assert.deepEqual(t.players[0].groups[0].stats, [['PTS', '10', 'Points'], ['OREB', '2']]);
 });
+
+test('NCAA football covers both FBS and FCS feeds (ESPN splits them by group)', () => {
+    const f = LEAGUES.filter((l) => l.path === 'football/college-football');
+    assert.deepEqual(f.map((l) => [l.key, l.query.match(/groups=(\d+)/)[1]]), [['ncaaf', '80'], ['ncaaf-fcs', '81']]);
+    const keys = gs.parseQuery('ncaa football southern utah').leagues.map((l) => l.key);
+    assert.ok(keys.includes('ncaaf') && keys.includes('ncaaf-fcs'));
+    assert.deepEqual(gs.parseQuery('fcs').leagues.map((l) => l.key), ['ncaaf-fcs']);
+    assert.equal(findGame('NCAA Football Southern Utah at Portland State',
+        [ev(team('Southern Utah', 'Thunderbirds'), team('Portland State', 'Vikings'))], f[1]).away.name, 'Portland State');
+});
