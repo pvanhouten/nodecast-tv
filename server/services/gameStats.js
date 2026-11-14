@@ -8,7 +8,9 @@ const LEAGUES = [
     { key: 'ncaam', sport: 'basketball', label: 'NCAAB', path: 'basketball/mens-college-basketball', query: 'groups=50&limit=400', words: 'ncaa ncaab college mens men basketball ncaam cbb' },
     { key: 'ncaaw', sport: 'basketball', label: 'NCAAW', path: 'basketball/womens-college-basketball', query: 'groups=50&limit=400', words: 'ncaa ncaaw college womens women basketball wbb' },
     { key: 'nba', sport: 'basketball', label: 'NBA', path: 'basketball/nba', query: '', words: 'nba basketball' },
-    { key: 'ncaaf', sport: 'football', label: 'NCAAF', path: 'football/college-football', query: 'groups=80&limit=400', words: 'ncaa ncaaf college football cfb' },
+    { key: 'ncaaf', sport: 'football', label: 'NCAAF', path: 'football/college-football', query: 'groups=80&limit=400', words: 'ncaa ncaaf college football cfb fbs' },
+    // ESPN's college-football scoreboard is split by division: groups=80 is FBS only, FCS games (Southern Utah, ...) are groups=81.
+    { key: 'ncaaf-fcs', sport: 'football', label: 'NCAAF FCS', path: 'football/college-football', query: 'groups=81&limit=400', words: 'ncaa ncaaf college football cfb fcs' },
     { key: 'nfl', sport: 'football', label: 'NFL', path: 'football/nfl', query: '', words: 'nfl football' },
     { key: 'nhl', sport: 'hockey', label: 'NHL', path: 'hockey/nhl', query: '', words: 'nhl hockey' },
     { key: 'mlb', sport: 'baseball', label: 'MLB', path: 'baseball/mlb', query: '', words: 'mlb baseball' },
