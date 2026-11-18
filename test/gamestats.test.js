@@ -92,10 +92,13 @@ test('lineups: basketball starters/bench with stat line; DNP hidden', () => {
     const a = (n, num, starter, st, dnp = false) => ({ starter, didNotPlay: dnp, stats: st, athlete: { displayName: n, jersey: num, position: { abbreviation: 'G' } } });
     const summary = { header: { competitions: [{ competitors: [{ id: '7', homeAway: 'home' }] }] },
         boxscore: { players: [{ team: { id: '7', shortDisplayName: 'Wisconsin' }, statistics: [{ labels: ['MIN', 'PTS', 'REB', 'AST'], athletes: [
-            a('Starter', '3', true, ['30', '14', '6', '3']), a('Bench', '11', false, ['5', '2', '0', '0']), a('Idle', '99', false, [], true)] }] }] } };
+            a('Starter', '3', true, ['30', '14', '6', '3', '4']), a('Bench', '11', false, ['5', '2', '0', '0', '0']), a('Idle', '99', false, [], true)] }] }] } };
+    summary.boxscore.players[0].statistics[0].labels.push('PF');
     const [t] = gs.buildLineups(summary, 'basketball');
     assert.equal(t.homeAway, 'home');
-    assert.equal(t.starters[0].stat, '14 pts, 6 reb, 3 ast');
+    assert.equal(t.starters[0].stat, '14 pts, 6 reb, 3 ast, 4 PF');
+    assert.equal(t.starters[0].pf, 4);
+    assert.equal(t.bench[0].stat, '2 pts, 0 PF');
     assert.deepEqual(t.bench.map((p) => p.name), ['Bench']);
 });
 

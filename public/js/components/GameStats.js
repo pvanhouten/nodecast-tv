@@ -815,7 +815,7 @@ const GameStats = {
             box.innerHTML = '<div class="gs-empty">Lineups not posted yet</div>';
         } else {
             // Hide scores: names only. A spoiler delay shows the stats as they were `delay` seconds ago instead.
-            const p = (x, team) => `<div class="gs-p${!hide && x.out ? ' out' : ''}${!hide && x.in ? ' in' : ''}" data-team="${this.esc(team)}" data-name="${this.esc(x.name)}" data-num="${this.esc(x.num)}" title="Show player card"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(hide ? x.pos : (x.stat || x.pos))}</em></div>`;
+            const p = (x, team) => `<div class="gs-p${!hide && x.out ? ' out' : ''}${!hide && x.in ? ' in' : ''}${!hide && x.pf >= 4 ? ' foul' : ''}" data-team="${this.esc(team)}" data-name="${this.esc(x.name)}" data-num="${this.esc(x.num)}" title="Show player card"><b>${this.esc(x.num)}</b><span>${this.esc(x.name)}</span><em>${this.esc(hide ? x.pos : (x.stat || x.pos))}</em></div>`;
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
                 ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x, t.name)).join('')}
                 ${t.bench.length ? `<h5>${this.esc(t.benchLabel || 'Bench')}</h5>${t.bench.map((x) => p(x, t.name)).join('')}` : ''}</div>`;
@@ -1079,6 +1079,7 @@ const GameStats = {
 .gs-p b{min-width:20px;text-align:right;font-variant-numeric:tabular-nums;opacity:.75}
 .gs-p span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gs-p em{font-style:normal;font-size:10px;opacity:.55}
+.gs-p.foul em{color:#ffb454;opacity:1}
 .gs-p.out span{opacity:.5;text-decoration:line-through}.gs-p.in span::after{content:' \u2191';color:#5bd98c}
 .gs-note{flex-basis:100%;font-size:10px;opacity:.55;margin-top:4px}
 .gs-empty{opacity:.7;font-size:12px}
