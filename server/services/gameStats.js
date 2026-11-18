@@ -494,10 +494,13 @@ function basketballTeams(summary) {
         const idx = (l) => labels.indexOf(l);
         const stat = (p) => {
             const st = p.stats || [];
-            const pts = st[idx('PTS')], reb = st[idx('REB')], ast = st[idx('AST')];
-            return pts == null ? '' : `${pts} pts` + (reb && reb !== '0' ? `, ${reb} reb` : '') + (ast && ast !== '0' ? `, ${ast} ast` : '');
+            const pts = st[idx('PTS')], reb = st[idx('REB')], ast = st[idx('AST')], pf = st[idx('PF')];
+            return pts == null ? '' : `${pts} pts` + (reb && reb !== '0' ? `, ${reb} reb` : '') + (ast && ast !== '0' ? `, ${ast} ast` : '')
+                + (pf != null && pf !== '' ? `, ${pf} PF` : '');
         };
-        const row = (p) => ({ num: p.athlete?.jersey || '', name: p.athlete?.displayName || '', pos: p.athlete?.position?.abbreviation || '', stat: stat(p) });
+        // Personal fouls as a number so the overlay can flag foul trouble without parsing the stat line.
+        const fouls = (p) => { const n = parseInt((p.stats || [])[idx('PF')], 10); return Number.isFinite(n) ? n : undefined; };
+        const row = (p) => ({ num: p.athlete?.jersey || '', name: p.athlete?.displayName || '', pos: p.athlete?.position?.abbreviation || '', stat: stat(p), pf: fouls(p) });
         const all = block.athletes || [];
         return {
             homeAway: summary.header?.competitions?.[0]?.competitors?.find((c) => c.id === t.team?.id)?.homeAway || '',
