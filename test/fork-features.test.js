@@ -303,6 +303,26 @@ test('channel names and guide shows carry hover text with the full name', { time
     assert.match(guide, /<div class="epg-program \$\{isCurrent \? 'current' : ''\}"\s+style="width: \$\{width\}px;"\s+title=/);
 });
 
+test('guide search also finds channels airing a matching show in the guide window', () => {
+    const guide = fs.readFileSync(path.join(root, 'public/js/components/EpgGuide.js'), 'utf8');
+    const body = guide.match(/channelIdsAiring\(term\) \{([\s\S]*?)\n    \}\n/)[1];
+    const channelIdsAiring = new Function('term', body);
+    const now = Date.now();
+    const iso = ms => new Date(ms).toISOString();
+    const ctx = {
+        startTime: new Date(now - 3600e3), endTime: new Date(now + 24 * 3600e3),
+        programmes: [
+            { channelId: 'LP3', title: 'NBA Basketball : Portland Trail Blazers at Minnesota Timberwolves', description: '', start: iso(now), stop: iso(now + 3 * 3600e3) },
+            { channelId: 'OLD', title: 'Timberwolves replay', description: '', start: iso(now - 48 * 3600e3), stop: iso(now - 45 * 3600e3) },
+            { channelId: 'DESC', title: 'NBA', description: 'The Timberwolves host the Knicks', start: iso(now), stop: iso(now + 3600e3) },
+            { channelId: 'OTHER', title: 'Cooking', description: '', start: iso(now), stop: iso(now + 3600e3) },
+        ],
+    };
+    const ids = channelIdsAiring.call(ctx, 'timberwolves');
+    assert.deepEqual([...ids].sort(), ['DESC', 'LP3']);
+    assert.match(guide, /name\.includes\(searchTerm\) \|\| \(ch\.epgChannel && airing\.has\(ch\.epgChannel\.id\)\)/);
+});
+
 // ---------------------------------------------------------------------------------------------
 // Security: login throttle, Active Streams "Stop", and the VPN-proxy / privacy paths
 // ---------------------------------------------------------------------------------------------
