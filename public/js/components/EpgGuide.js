@@ -306,16 +306,36 @@ class EpgGuide {
     }
 
     /**
+     * EPG channel ids with a programme in the guide window whose title or description contains the term.
+     * @param {string} term - lowercase search term
+     * @returns {Set<string>}
+     */
+    channelIdsAiring(term) {
+        const ids = new Set();
+        const from = (this.startTime || new Date()).getTime();
+        const to = (this.endTime || new Date(from + 24 * 3600 * 1000)).getTime();
+        for (const p of this.programmes || []) {
+            if (ids.has(p.channelId)) continue;
+            const text = `${p.title || ''} ${p.description || ''}`.toLowerCase();
+            if (!text.includes(term)) continue;
+            if (new Date(p.start).getTime() < to && new Date(p.stop).getTime() > from) ids.add(p.channelId);
+        }
+        return ids;
+    }
+
+    /**
      * Update filtered channels based on search or group
      */
     updateFilteredChannels() {
         const searchTerm = this.searchInput ? this.searchInput.value.toLowerCase().trim() : '';
 
-        // SEARCH MODE: Filter all channels by name
+        // SEARCH MODE: Filter all channels by name, or by what they are airing in the guide window
+        // (title/description), so a team name finds the channel carrying that game.
         if (searchTerm) {
+            const airing = this.channelIdsAiring(searchTerm);
             this.filteredChannels = this.allMatchedChannels.filter(ch => {
                 const name = (ch.sourceChannel?.name || '').toLowerCase();
-                return name.includes(searchTerm);
+                return name.includes(searchTerm) || (ch.epgChannel && airing.has(ch.epgChannel.id));
             });
             return;
         }
