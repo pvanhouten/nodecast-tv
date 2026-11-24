@@ -390,3 +390,19 @@ test('college football lineup: players who have played by unit, rest of roster b
     assert.deepEqual(pre.starters.map((p) => p.unit + ':' + p.pos), ['Offense:QB', 'Offense:WR', 'Offense:OL', 'Defense:LB', 'Special teams:K']);
     assert.equal(pre.bench.length, 0);
 });
+
+test('headshots: ESPN box-score URL is kept, otherwise built from the league folder and athlete id', () => {
+    const L = (key) => gs.LEAGUES.find((l) => l.key === key);
+    assert.equal(gs.headshotUrl(L('nba'), '4278039'), 'https://a.espncdn.com/i/headshots/nba/players/full/4278039.png');
+    assert.equal(gs.headshotUrl(L('ncaaf-fcs'), '1'), 'https://a.espncdn.com/i/headshots/college-football/players/full/1.png');
+    assert.equal(gs.headshotUrl(L('ncaam'), '5142710'), 'https://a.espncdn.com/i/headshots/mens-college-basketball/players/full/5142710.png');
+    assert.equal(gs.headshotUrl(L('soc-eng.1') || gs.LEAGUES.find((l) => l.sport === 'soccer'), '167192'), 'https://a.espncdn.com/i/headshots/soccer/players/full/167192.png');
+    assert.equal(gs.headshotUrl(L('nba'), '../x'), '');
+    const summary = { header: { competitions: [{ competitors: [{ id: '7', homeAway: 'home' }] }] },
+        boxscore: { players: [{ team: { id: '7', shortDisplayName: 'T' }, statistics: [{ labels: ['PTS'], athletes: [
+            { starter: true, stats: ['10'], athlete: { id: '99', displayName: 'A', jersey: '3', headshot: { href: 'https://a.espncdn.com/i/headshots/nba/players/full/99.png' } } },
+            { starter: false, stats: ['2'], athlete: { id: '98', displayName: 'B', jersey: '4' } }] }] }] } };
+    const [t] = gs.boxPlayers(summary, 'basketball');
+    assert.equal(t.players[0].photo, 'https://a.espncdn.com/i/headshots/nba/players/full/99.png');
+    assert.equal(t.players[1].photo, '');
+});

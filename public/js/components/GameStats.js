@@ -402,6 +402,8 @@ const GameStats = {
             this.el.className = 'gamestats';
             // Keep double-clicks (and taps) on the overlay from reaching the player (fullscreen toggle).
             this.el.addEventListener('dblclick', (e) => e.stopPropagation());
+            // A missing headshot (common for soccer) just collapses; the card still has the name/number line.
+            this.el.addEventListener('error', (e) => { if (e.target && e.target.classList && e.target.classList.contains('gs-photo')) { const h = e.target.parentNode; e.target.remove(); if (h) h.classList.remove('has-photo'); } }, true);
             this.el.addEventListener('click', (e) => {
                 const hit = (sel) => e.target.closest(sel);
                 if (hit('.gs-min-btn')) this.toggleMin();
@@ -972,7 +974,8 @@ const GameStats = {
         const body = this.settings.hideScores
             ? '<div class="gs-empty">This game\u2019s stats are hidden by the spoiler guard</div>'
             : groups.length ? groups.map((g) => `<h5>${this.esc(g.title)}</h5><div class="gs-kvs">${kv(g.stats)}</div>`).join('') : '<div class="gs-empty">No stats in this game yet</div>';
-        return `<div class="gs-card"><div class="gs-card-h"><b>${p.num ? '#' + this.esc(p.num) + ' ' : ''}${this.esc(p.name)}</b>
+        const photo = p.photo && /^https:\/\/a\.espncdn\.com\//.test(p.photo) ? `<img class="gs-photo" src="${this.esc(p.photo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
+        return `<div class="gs-card"><div class="gs-card-h${photo ? ' has-photo' : ''}">${photo}<b>${p.num ? '#' + this.esc(p.num) + ' ' : ''}${this.esc(p.name)}</b>
             <em>${this.esc(p.team)}${p.pos ? ' \u00b7 ' + this.esc(p.pos) : ''}</em>
             <button type="button" class="gs-card-x" title="Close" aria-label="Close player card">&times;</button></div>
           ${body}
@@ -1070,7 +1073,8 @@ const GameStats = {
 .gs-hit:hover{background:rgba(255,255,255,.16)}
 .gs-hit b{min-width:22px;text-align:right;opacity:.75}.gs-hit span{flex:1}.gs-hit em{font-style:normal;font-size:10px;opacity:.55}
 .gs-card{margin-top:6px;padding:8px;border-radius:8px;background:rgba(255,255,255,.07)}
-.gs-card-h{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}.gs-card-h em{margin-left:auto}
+.gs-card-h{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.gs-card-h.has-photo{align-items:center;gap:10px;margin-bottom:6px}.gs-photo{flex:none;width:48px;height:48px;border-radius:50%;object-fit:cover;object-position:top;background:rgba(255,255,255,.1)}.gs-card-h em{margin-left:auto}
 .gs-card-x{flex:none;width:20px;height:20px;padding:0;border:0;border-radius:5px;background:rgba(255,255,255,.1);color:#fff;font-size:14px;line-height:1;cursor:pointer;align-self:center}.gs-card-x:hover{background:rgba(255,255,255,.24)}.gs-card-h em{font-style:normal;font-size:11px;opacity:.6}
 .gs-card h5{margin:8px 0 3px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;opacity:.55}
 .gs-kvs{display:flex;flex-wrap:wrap;gap:4px 10px}
