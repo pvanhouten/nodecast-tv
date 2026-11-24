@@ -526,6 +526,14 @@ function withDesc(pair, desc) {
 
 // Every player in a box score with their stat groups. Works for basketball, NFL, NHL and MLB
 // (boxscore.players[team].statistics[category].athletes[]); soccer comes from rosters[].roster[].stats.
+// ESPN's headshot CDN is keyed by league folder + athlete id. Box scores carry the exact URL for most sports; rosters and soccer
+// don't, so fall back to the pattern (soccer coverage is thin and the client hides the image if it 404s).
+function headshotUrl(league, id) {
+    if (!league || !/^\d{1,12}$/.test(String(id || ''))) return '';
+    const folder = league.sport === 'soccer' ? 'soccer' : String(league.path || '').split('/').pop();
+    return folder ? `https://a.espncdn.com/i/headshots/${folder}/players/full/${id}.png` : '';
+}
+
 function boxPlayers(summary, sport) {
     const teams = [];
     if (sport === 'soccer') {
@@ -556,7 +564,7 @@ function boxPlayers(summary, sport) {
                 let p = byId.get(id);
                 if (!p) {
                     p = { id, num: a.athlete.jersey || '', name: a.athlete.displayName || '', pos: a.athlete.position?.abbreviation || '',
-                        starter: !!a.starter, unit: title, groups: [] };
+                        starter: !!a.starter, unit: title, groups: [], photo: a.athlete.headshot?.href || '' };
                     byId.set(id, p);
                 }
                 p.groups.push({ title, stats: (block.labels || []).map((l, i) => withDesc([l, (a.stats || [])[i]], (block.descriptions || [])[i])).filter(([, v]) => v != null && v !== '') });
@@ -822,6 +830,7 @@ async function players(leagueKey, eventId) {
                     for (const r of roster) if (!have.has(r.id)) t.players.push({ ...r, groups: [] });
                 }
             }
+            for (const t of teams) for (const p of t.players) p.photo = p.photo || headshotUrl(league, p.id);
             return { sport: league.sport, teams };
         })
         .catch((err) => { playersCache.delete(key); console.warn(`[GameStats] players ${key} failed: ${err.message}`); return null; });
@@ -850,4 +859,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { buildVar, singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { headshotUrl, buildVar, singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
