@@ -475,15 +475,22 @@ async function gameById(leagueKey, eventId) {
 const LINEUP_CACHE_MS = 10_000;   // matches the scoreboard cache; a spoiler delay needs fine-grained snapshots
 const lineupCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
 
+// ESPN sends subbedOut/subbedIn as plain booleans once a match is live, but before kickoff as an object
+// ({ didSub: false }), which `!!` would read as true (every starter struck out, every sub promoted).
+function subFlag(v) {
+    if (v && typeof v === 'object') return v.didSub === true;
+    return v === true;
+}
+
 function soccerTeams(summary) {
     return (summary.rosters || []).map((r) => ({
         homeAway: r.homeAway,
         name: r.team?.shortDisplayName || r.team?.displayName || '',
         formation: r.formation || '',
         starters: (r.roster || []).filter((p) => p.starter).sort((a, b) => (a.formationPlace || 99) - (b.formationPlace || 99))
-            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', out: !!p.subbedOut })),
+            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', out: subFlag(p.subbedOut) })),
         bench: (r.roster || []).filter((p) => !p.starter)
-            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', in: !!p.subbedIn }))
+            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', in: subFlag(p.subbedIn) }))
     }));
 }
 
@@ -718,7 +725,32 @@ const STAT_SETS = {
     soccer: [['possessionPct', 'Possession'], ['totalShots', 'Shots'], ['shotsOnTarget', 'On target'], ['wonCorners', 'Corners'], ['foulsCommitted', 'Fouls'], ['yellowCards', 'Yellow'], ['redCards', 'Red'], ['offsides', 'Offsides'], ['saves', 'Saves']]
 };
 
-// Pure: { winProb, spread, teamStats } from an ESPN summary. Anything missing is null.
+// Soccer VAR: ESPN has no flag for it, only commentary entries. A "Start Delay" whose text mentions VAR opens a
+// check ("Delay in match (Hull City). VAR checking."); an "End Delay", a "VAR - Referee decision ..." entry, an
+// "overturned by VAR" line, or a restart/half marker closes it. Pure: { checking, since, decisions[] } or null.
+function buildVar(summary, sport) {
+    if (sport !== 'soccer' || !Array.isArray(summary.commentary)) return null;
+    const state = summary.header?.competitions?.[0]?.status?.type?.state;
+    const entries = summary.commentary.map((c, i) => ({ c, i })).sort((a, b) => (a.c.sequence ?? a.i) - (b.c.sequence ?? b.i)).map((x) => x.c);
+    const decisions = [];
+    let since = null;
+    for (const c of entries) {
+        const type = c.play?.type?.text || c.type?.text || '';
+        const text = c.text || '';
+        const min = c.time?.displayValue || '';
+        if (/^Start Delay$/i.test(type) && /\bVAR\b/.test(text)) { since = min || '?'; continue; }
+        if (/^(End Delay|Kickoff|Halftime|Start 2nd Half|End Regular Time|Full Time)$/i.test(type)) { since = null; continue; }
+        const overturned = /overturned by VAR|ruled out after a VAR review/i.test(text);
+        if (/^VAR - Referee decision/i.test(type) || overturned) {
+            since = null;
+            const clean = text.replace(/^VAR Decision:\s*/i, '').replace(/^GOAL OVERTURNED BY VAR:\s*/i, 'Goal overturned: ').trim();
+            if (clean) decisions.push({ min, text: clean, kind: overturned ? 'nogoal' : 'decision' });
+        }
+    }
+    return { checking: since !== null && state === 'in', since: since !== null ? since : '', decisions };
+}
+
+// Pure: { winProb, spread, teamStats, varCheck } from an ESPN summary. Anything missing is null.
 function buildExtra(summary, sport) {
     let winProb = null;
     const wp = summary.winprobability;
@@ -748,7 +780,7 @@ function buildExtra(summary, sport) {
             .filter((r) => r.away != null && r.home != null);
         if (rows.length) teamStats = { away: away.team?.abbreviation || away.team?.shortDisplayName || '', home: home.team?.abbreviation || home.team?.shortDisplayName || '', rows };
     }
-    return { winProb, spread, teamStats };
+    return { winProb, spread, teamStats, varCheck: buildVar(summary, sport) };
 }
 
 const extraCache = new Map();
@@ -818,4 +850,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { buildVar, singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };

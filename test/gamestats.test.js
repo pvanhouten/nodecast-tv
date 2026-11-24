@@ -88,6 +88,19 @@ test('lineups: soccer starters ordered by formation place, subs flagged', () => 
     assert.equal(out[0].bench[0].in, true);
 });
 
+test('lineups: soccer pre-kickoff sub flags ({ didSub: false } objects) are not treated as subs', () => {
+    const r = (players) => ({ homeAway: 'home', formation: '4-3-3', team: { shortDisplayName: 'Como' }, roster: players });
+    const pl = (n, starter, extra) => ({ jersey: '1', starter, formationPlace: 1, athlete: { displayName: n }, position: { abbreviation: 'X' }, ...extra });
+    const [t] = gs.buildLineups({ rosters: [r([
+        pl('Starter', true, { subbedOut: { didSub: false }, subbedIn: { didSub: false } }),
+        pl('Bench', false, { subbedOut: { didSub: false }, subbedIn: { didSub: false } }),
+        pl('Subbed off', true, { subbedOut: { didSub: true } }),
+        pl('Came on', false, { subbedIn: { didSub: true } }),
+        pl('Plain', true, {})])] }, 'soccer');
+    assert.deepEqual(t.starters.map((p) => [p.name, p.out]), [['Starter', false], ['Subbed off', true], ['Plain', false]]);
+    assert.deepEqual(t.bench.map((p) => [p.name, p.in]), [['Bench', false], ['Came on', true]]);
+});
+
 test('lineups: basketball starters/bench with stat line; DNP hidden', () => {
     const a = (n, num, starter, st, dnp = false) => ({ starter, didNotPlay: dnp, stats: st, athlete: { displayName: n, jersey: num, position: { abbreviation: 'G' } } });
     const summary = { header: { competitions: [{ competitors: [{ id: '7', homeAway: 'home' }] }] },
@@ -231,9 +244,37 @@ test('extra: win probability, line and team stats from a summary', () => {
     assert.deepEqual(x.teamStats.rows[0], { label: 'FG%', away: '40%', home: '53%' });
     assert.deepEqual(x.teamStats.rows.map((r) => r.label), ['FG%', 'REB', 'AST']);
     const none = gs.buildExtra({}, 'soccer');
-    assert.deepEqual(none, { winProb: null, spread: null, teamStats: null });
+    assert.deepEqual(none, { winProb: null, spread: null, teamStats: null, varCheck: null });
     const soc = gs.buildExtra({ boxscore: { teams: [{ homeAway: 'home', team: { abbreviation: 'A' }, statistics: [stat('possessionPct', '56.5')] }, { homeAway: 'away', team: { abbreviation: 'B' }, statistics: [stat('possessionPct', '43.5')] }] } }, 'soccer');
     assert.deepEqual(soc.teamStats.rows[0], { label: 'Possession', away: '43.5%', home: '56.5%' });
+});
+
+test('VAR: an open "VAR checking" delay is reported while live, closed by End Delay or a decision', () => {
+    const e = (sequence, type, text, min) => ({ sequence, text, time: { displayValue: min }, play: { type: { text: type } } });
+    const sum = (state, entries) => ({ header: { competitions: [{ status: { type: { state } } }] }, commentary: entries });
+    const open = gs.buildVar(sum('in', [e(1, 'Kickoff', 'First Half begins.', ''), e(2, 'Goal', 'Goal! A 1, B 0.', '30\''), e(3, 'Start Delay', 'Delay in match (B). VAR checking.', '31\'')]), 'soccer');
+    assert.equal(open.checking, true);
+    assert.equal(open.since, "31'");
+    // entries may arrive out of order; sequence decides
+    const closed = gs.buildVar(sum('in', [e(4, 'VAR - Referee decision confirmed', 'VAR Decision: No Penalty Arsenal.', '31\''), e(3, 'Start Delay', 'Delay in match (B). VAR checking.', '31\'')]), 'soccer');
+    assert.equal(closed.checking, false);
+    assert.deepEqual(closed.decisions, [{ min: "31'", text: 'No Penalty Arsenal.', kind: 'decision' }]);
+    const ended = gs.buildVar(sum('in', [e(1, 'Start Delay', 'Delay in match (B). VAR checking.', '40\''), e(2, 'End Delay', 'Delay over.', '42\'')]), 'soccer');
+    assert.equal(ended.checking, false);
+    // a finished game or half-time never shows an open check
+    assert.equal(gs.buildVar(sum('post', [e(1, 'Start Delay', 'Delay in match (B). VAR checking.', '40\'')]), 'soccer').checking, false);
+    assert.equal(gs.buildVar(sum('in', [e(1, 'Start Delay', 'Delay in match (B). VAR checking.', '45\''), e(2, 'Halftime', 'First Half ends.', '45\'+2\'')]), 'soccer').checking, false);
+});
+
+test('VAR: injury delays are not VAR checks; overturned goals are flagged; other sports and missing commentary give null', () => {
+    const e = (sequence, type, text, min) => ({ sequence, text, time: { displayValue: min }, play: { type: { text: type } } });
+    const base = (entries) => ({ header: { competitions: [{ status: { type: { state: 'in' } } }] }, commentary: entries });
+    assert.equal(gs.buildVar(base([e(1, 'Start Delay', 'Delay in match because of an injury Hugo Novoa (Alaves).', '78\'')]), 'soccer').checking, false);
+    const og = gs.buildVar(base([e(1, 'Deleted After Review', 'GOAL OVERTURNED BY VAR: Pablo Duran (Celta Vigo) scores but the goal is ruled out after a VAR review.', '20\'')]), 'soccer');
+    assert.equal(og.decisions[0].kind, 'nogoal');
+    assert.match(og.decisions[0].text, /^Goal overturned: Pablo Duran/);
+    assert.equal(gs.buildVar(base([]), 'basketball'), null);
+    assert.equal(gs.buildVar({}, 'soccer'), null);
 });
 
 test('soccer competitions are separate labelled feeds; league words route searches', () => {

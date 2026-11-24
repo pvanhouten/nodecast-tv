@@ -507,8 +507,13 @@ const GameStats = {
         const line = x && x.spread && game.state !== 'post'
             ? `<div class="gs-line">Line ${this.esc(x.spread.text)}${x.spread.overUnder != null ? ' \u00b7 O/U ' + this.esc(x.spread.overUnder) : ''}</div>` : '';
         const icon = { goal: '\u26bd', pen: '\u26bd (pen)', og: '\u26bd (og)', yellow: '\ud83d\udfe8', red: '\ud83d\udfe5' };
-        const events = !hide && game.events && game.events.length
-            ? `<div class="gs-events">${game.events.map((e) => `<div>${this.esc(e.min)} ${icon[e.kind] || ''} ${this.esc(e.player)} <em>${this.esc(e.team)}</em></div>`).join('')}</div>` : '';
+        // Goals/cards come from the scoreboard, VAR decisions from the game summary (extra); merge them by match minute.
+        const minKey = (m) => { const r = /(\d+)'?(?:\s*\+\s*(\d+))?/.exec(m || ''); return r ? +r[1] + (r[2] ? +r[2] / 100 : 0) : 999; };
+        const varEv = !hide && x && x.varCheck ? x.varCheck.decisions.map((d) => ({ min: d.min, html: `<div class="gs-varev${d.kind === 'nogoal' ? ' nogoal' : ''}">${this.esc(d.min)} VAR: ${this.esc(d.text)}</div>` })) : [];
+        const evAll = !hide ? (game.events || []).map((e) => ({ min: e.min, html: `<div>${this.esc(e.min)} ${icon[e.kind] || ''} ${this.esc(e.player)} <em>${this.esc(e.team)}</em></div>` })).concat(varEv)
+            .map((e, i) => ({ e, i })).sort((a, b) => (minKey(a.e.min) - minKey(b.e.min)) || (a.i - b.i)).map((o) => o.e) : [];
+        const events = evAll.length ? `<div class="gs-events">${evAll.map((e) => e.html).join('')}</div>` : '';
+        const varBadge = !hide && x && x.varCheck && x.varCheck.checking ? `<span class="gs-var" title="ESPN reports a VAR check${x.varCheck.since ? ' since ' + this.esc(x.varCheck.since) : ''}">VAR CHECK</span>` : '';
         const sit = !hide && game.situation ? `<div class="gs-sit">${this.esc(game.situation)}</div>` : '';
         const play = !hide && game.lastPlay ? `<div class="gs-play">${this.esc(game.lastPlay)}</div>` : '';
         const canLineup = game.id && (game.sport === 'soccer' || ['ncaam', 'ncaaw', 'nba', 'nfl', 'ncaaf', 'ncaaf-fcs', 'nhl', 'mlb'].includes(game.leagueKey));
@@ -519,6 +524,7 @@ const GameStats = {
             <div class="gs-head" title="Drag to move \u00b7 double-click to reset"><span class="gs-league">${this.esc(game.league)}</span>
               <span class="gs-mini">${this.esc(game.away.abbr || game.away.name)} ${sc(game.away.score)}\u2013${sc(game.home.score)} ${this.esc(game.home.abbr || game.home.name)}</span>
               <span class="gs-status${live ? ' live' : ''}">${this.esc(game.detail)}</span>
+              ${varBadge}
               ${this.pinned ? '<button type="button" class="gs-unpin-btn" title="Pinned by hand \u00b7 click to go back to automatic">\u{1F4CC}</button>' : ''}
               ${findBtn}${setBtn}
               <button type="button" class="gs-min-btn" title="${minNow ? 'Expand' : 'Minimize'}">${minNow ? '+' : '\u2013'}</button></div>
@@ -572,7 +578,7 @@ const GameStats = {
         this.renderTstats();
         // With a spoiler delay the lineups and player stats are collected in the background too, so they can be shown as they were.
         if (this.settings.delay > 0) { this.fetchLineups(game); this.fetchPlayers(game); }
-        this.extraTimer = setTimeout(() => this.loadExtra(), this.settings.delay > 0 ? this.POLL_FAST_MS + 2000 : this.EXTRA_MS);
+        this.extraTimer = setTimeout(() => this.loadExtra(), this.settings.delay > 0 ? this.POLL_FAST_MS + 2000 : (game.sport === 'soccer' ? this.POLL_MS : this.EXTRA_MS));
     },
 
     toggleTstats() {
@@ -1042,6 +1048,9 @@ const GameStats = {
 .gs-sit{margin-top:4px;font-size:11px;font-weight:600;color:#ffd166}
 .gs-events{margin-top:4px;font-size:11px;max-height:120px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}.gs-events em{font-style:normal;opacity:.55}
 .gs-line{margin-top:3px;font-size:10px;opacity:.65}
+.gs-var{margin-left:6px;padding:1px 6px;border-radius:4px;background:#ffd166;color:#111;font-size:10px;font-weight:700;letter-spacing:.3px;animation:gs-var-pulse 1.2s ease-in-out infinite}
+@keyframes gs-var-pulse{50%{opacity:.45}}
+.gs-varev{color:#ffd166}.gs-varev.nogoal{color:#ff7b72;font-weight:600}
 .gs-wp{display:flex;height:5px;margin-top:6px;border-radius:3px;overflow:hidden;background:rgba(255,255,255,.12)}
 .gs-wp-a{background:#6ea8fe}.gs-wp-h{background:#f0883e}
 .gs-wp-l{display:flex;justify-content:space-between;font-size:10px;opacity:.7;margin-top:2px}
