@@ -475,15 +475,22 @@ async function gameById(leagueKey, eventId) {
 const LINEUP_CACHE_MS = 10_000;   // matches the scoreboard cache; a spoiler delay needs fine-grained snapshots
 const lineupCache = new Map(); // `${leagueKey}:${eventId}` -> { at, promise }
 
+// ESPN sends subbedOut/subbedIn as plain booleans once a match is live, but before kickoff as an object
+// ({ didSub: false }), which `!!` would read as true (every starter struck out, every sub promoted).
+function subFlag(v) {
+    if (v && typeof v === 'object') return v.didSub === true;
+    return v === true;
+}
+
 function soccerTeams(summary) {
     return (summary.rosters || []).map((r) => ({
         homeAway: r.homeAway,
         name: r.team?.shortDisplayName || r.team?.displayName || '',
         formation: r.formation || '',
         starters: (r.roster || []).filter((p) => p.starter).sort((a, b) => (a.formationPlace || 99) - (b.formationPlace || 99))
-            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', out: !!p.subbedOut })),
+            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', out: subFlag(p.subbedOut) })),
         bench: (r.roster || []).filter((p) => !p.starter)
-            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', in: !!p.subbedIn }))
+            .map((p) => ({ num: p.jersey || '', name: p.athlete?.displayName || '', pos: p.position?.abbreviation || '', in: subFlag(p.subbedIn) }))
     }));
 }
 

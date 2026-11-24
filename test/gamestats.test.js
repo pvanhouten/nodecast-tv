@@ -88,6 +88,19 @@ test('lineups: soccer starters ordered by formation place, subs flagged', () => 
     assert.equal(out[0].bench[0].in, true);
 });
 
+test('lineups: soccer pre-kickoff sub flags ({ didSub: false } objects) are not treated as subs', () => {
+    const r = (players) => ({ homeAway: 'home', formation: '4-3-3', team: { shortDisplayName: 'Como' }, roster: players });
+    const pl = (n, starter, extra) => ({ jersey: '1', starter, formationPlace: 1, athlete: { displayName: n }, position: { abbreviation: 'X' }, ...extra });
+    const [t] = gs.buildLineups({ rosters: [r([
+        pl('Starter', true, { subbedOut: { didSub: false }, subbedIn: { didSub: false } }),
+        pl('Bench', false, { subbedOut: { didSub: false }, subbedIn: { didSub: false } }),
+        pl('Subbed off', true, { subbedOut: { didSub: true } }),
+        pl('Came on', false, { subbedIn: { didSub: true } }),
+        pl('Plain', true, {})])] }, 'soccer');
+    assert.deepEqual(t.starters.map((p) => [p.name, p.out]), [['Starter', false], ['Subbed off', true], ['Plain', false]]);
+    assert.deepEqual(t.bench.map((p) => [p.name, p.in]), [['Bench', false], ['Came on', true]]);
+});
+
 test('lineups: basketball starters/bench with stat line; DNP hidden', () => {
     const a = (n, num, starter, st, dnp = false) => ({ starter, didNotPlay: dnp, stats: st, athlete: { displayName: n, jersey: num, position: { abbreviation: 'G' } } });
     const summary = { header: { competitions: [{ competitors: [{ id: '7', homeAway: 'home' }] }] },
