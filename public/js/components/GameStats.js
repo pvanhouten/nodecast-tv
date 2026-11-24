@@ -126,12 +126,13 @@ const GameStats = {
     shellGame: undefined,
     programs: new Map(),  // channel name -> { title, desc } of its current EPG program (fed by the player)
     pos: null,            // { x, y } in px from the video container's top-left, or null = default corner
-    settings: { delay: 0, hideScores: false, autoMin: true, dim: true },
+    settings: { delay: 0, hideScores: false, autoMin: true, dim: true, goalToast: true },
 
     init() {
         try {
             this.min = localStorage.getItem('gamestats-min') === '1';
             this.off = localStorage.getItem('gamestats-off') === '1';
+            this.pitchView = localStorage.getItem('gamestats-pitch') === '1';
             this.pos = JSON.parse(localStorage.getItem('gamestats-pos') || 'null');
             Object.assign(this.settings, JSON.parse(localStorage.getItem('gamestats-settings') || '{}'));
         } catch (_) { /* storage unavailable: defaults */ }
@@ -181,15 +182,36 @@ const GameStats = {
         if (!this.off) this.render(this.shown || null);
     },
 
-    toast(msg) {
+    toast(msg, ms, cls) {
         const host = this.container();
         if (!host) return;
         let t = host.querySelector('.gs-toast');
         if (!t) { t = document.createElement('div'); t.className = 'gs-toast'; host.appendChild(t); }
         t.textContent = msg;
+        t.classList.toggle('score', cls === 'score');
         t.classList.add('show');
         clearTimeout(this._toastTimer);
-        this._toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+        this._toastTimer = setTimeout(() => t.classList.remove('show'), ms || 2200);
+    },
+
+    // A banner when the score goes up between two paints of the SAME game. It runs off the shown (spoiler-delayed) snapshot, so it
+    // never arrives early. Skipped for basketball (too frequent) and when scores are hidden or the number went down (VAR).
+    scoreToast(prev, game) {
+        if (!this.settings.goalToast || this.off || this.settings.hideScores) return;
+        if (!prev || !game || prev.id !== game.id || prev.state !== 'in' || game.sport === 'basketball') return;
+        const n = (v) => (/^\d+$/.test(String(v)) ? Number(v) : NaN);
+        const da = n(game.away.score) - n(prev.away.score), dh = n(game.home.score) - n(prev.home.score);
+        if (!(da > 0 || dh > 0) || da < 0 || dh < 0) return;
+        const side = da > 0 ? game.away : game.home;
+        const label = { soccer: 'GOAL', hockey: 'GOAL', baseball: 'RUN SCORES', football: 'SCORE' }[game.sport] || 'SCORE';
+        let msg = `${label}${game.sport === 'soccer' ? '!' : ' ' + (side.abbr || side.name)} \u00b7 ${game.away.abbr || game.away.name} ${game.away.score}\u2013${game.home.score} ${game.home.abbr || game.home.name}`;
+        if (game.sport === 'soccer') {
+            const ev = (game.events || []).filter((e) => e.kind === 'goal' || e.kind === 'pen' || e.kind === 'og').pop();
+            if (ev && ev.player) msg += ` \u00b7 ${ev.player}${ev.kind === 'og' ? ' (og)' : ev.kind === 'pen' ? ' (pen)' : ''} ${ev.min}`;
+        } else if (game.lastPlay) {
+            msg += ` \u00b7 ${String(game.lastPlay).slice(0, 70)}`;
+        }
+        this.toast(msg, 7000, 'score');
     },
 
     onNowPlaying(channel, epgData) {
@@ -395,7 +417,9 @@ const GameStats = {
     render(game) {
         const host = this.container();
         if (!host) return;
+        const prevShown = this.shown;
         this.shown = game || null;
+        this.scoreToast(prevShown, game);
         if (!game && !this.channel) { if (this.el) this.el.hidden = true; return; }
         if (!this.el || !host.contains(this.el)) {
             this.el = document.createElement('div');
@@ -413,7 +437,9 @@ const GameStats = {
                 else if (hit('.gs-tstats-btn')) this.toggleTstats();
                 else if (hit('.gs-lineups-btn')) this.toggleLineups();
                 else if (hit('.gs-card-x')) this.closeCard();
+                else if (hit('.gs-pitch-toggle')) { this.pitchView = !this.pitchView; try { localStorage.setItem('gamestats-pitch', this.pitchView ? '1' : '0'); } catch (_) { /* ignore */ } this.renderLineups(); }
                 else if (hit('.gs-p')) this.pickPlayer(hit('.gs-p'));
+                else if (hit('.gs-pp')) this.pickPlayer(hit('.gs-pp'));
             });
             this.bindDrag();
             this.bindTips();
@@ -439,6 +465,7 @@ const GameStats = {
                   <label><input type="checkbox" class="gs-set-hide"> Hide scores</label>
                   <label><input type="checkbox" class="gs-set-automin"> Minimize when the game ends</label>
                   <label><input type="checkbox" class="gs-set-dim"> Fade when player controls hide</label>
+                  <label><input type="checkbox" class="gs-set-toast"> Pop up when a team scores</label>
                   <div class="gs-note">Press G to show or hide this overlay. IPTV is usually behind live: set a delay so scores, win probability, lineups and player stats match what you see.</div></div>
                 <div class="gs-tstats" hidden></div>
                 <div class="gs-lineups" hidden>
@@ -504,7 +531,7 @@ const GameStats = {
         if (!hide && live && x && x.winProb) {
             const a = Math.round(x.winProb.away * 100), h = Math.round(x.winProb.home * 100);
             if (a + h > 0) wp = `<div class="gs-wp" title="Win probability"><span class="gs-wp-a" style="flex:${a}"></span><span class="gs-wp-h" style="flex:${h}"></span></div>
-                <div class="gs-wp-l"><span>${this.esc(game.away.abbr || game.away.name)} ${a}%</span><span>${this.esc(game.home.abbr || game.home.name)} ${h}%</span></div>`;
+                <div class="gs-wp-l"><span>${this.esc(game.away.abbr || game.away.name)} ${a}%</span><span>${this.esc(game.home.abbr || game.home.name)} ${h}%</span></div>${this.sparkline(x.winProb.history, game)}`;
         }
         const line = x && x.spread && game.state !== 'post'
             ? `<div class="gs-line">Line ${this.esc(x.spread.text)}${x.spread.overUnder != null ? ' \u00b7 O/U ' + this.esc(x.spread.overUnder) : ''}</div>` : '';
@@ -613,11 +640,13 @@ const GameStats = {
         q('.gs-set-hide').checked = !!this.settings.hideScores;
         q('.gs-set-automin').checked = !!this.settings.autoMin;
         q('.gs-set-dim').checked = !!this.settings.dim;
+        q('.gs-set-toast').checked = this.settings.goalToast !== false;
         box.addEventListener('change', () => {
             this.settings.delay = Number(q('.gs-set-delay').value) || 0;
             this.settings.hideScores = q('.gs-set-hide').checked;
             this.settings.autoMin = q('.gs-set-automin').checked;
             this.settings.dim = q('.gs-set-dim').checked;
+            this.settings.goalToast = q('.gs-set-toast').checked;
             this.saveSettings();
             this.syncDim();
             this._mask = null;
@@ -809,6 +838,37 @@ const GameStats = {
         this.lineupTimer = setTimeout(() => this.loadLineups(), 30000);
     },
 
+    // Soccer: lay the starters out by formation. ESPN's formationPlace isn't in row order, so rank by role (keeper, defenders,
+    // holding mids, wide/central mids, attacking mids, forwards, striker) and cut the ranking into the formation's row sizes
+    // ("4-2-3-1" -> 4, 2, 3, 1), then order each row left to right from the team's own point of view. null = can't lay it out.
+    pitchRows(t) {
+        const sizes = String(t.formation || '').split('-').map(Number);
+        if (!sizes.length || sizes.some((n) => !(n > 0)) || sizes.reduce((a, b) => a + b, 0) !== 10) return null;
+        const depth = (pos) => {
+            const q = String(pos || '').toUpperCase();
+            if (/^(G|GK)$/.test(q)) return 0;
+            if (/^(CD|CB|SW|RB|LB|WB|RWB|LWB)/.test(q)) return 1;
+            if (/^(DM|CDM)/.test(q)) return 2;
+            if (/^(AM|CAM|SS)/.test(q)) return 4;
+            if (/^(F|ST)$/.test(q)) return 6;
+            if (/^(CF|RF|LF|FW)/.test(q)) return 5;
+            return 3; // CM, LM, RM, M
+        };
+        // Left to right: wide-left (LB, LM, LF) < central-left (CD-L, CM-L) < centre < central-right < wide-right.
+        const side = (pos) => { const q = String(pos || '').toUpperCase(); return /^L/.test(q) ? -2 : /^R/.test(q) ? 2 : /-L$/.test(q) ? -1 : /-R$/.test(q) ? 1 : 0; };
+        const xs = t.starters.map((x, i) => ({ x, i, d: depth(x.pos) }));
+        const gk = xs.filter((o) => o.d === 0);
+        const field = xs.filter((o) => o.d !== 0).sort((a, b) => a.d - b.d || a.i - b.i);
+        if (gk.length !== 1 || field.length !== 10) return null;
+        const rows = [[gk[0].x]];
+        let at = 0;
+        for (const n of sizes) {
+            rows.push(field.slice(at, at + n).sort((a, b) => side(a.x.pos) - side(b.x.pos) || a.i - b.i).map((o) => o.x));
+            at += n;
+        }
+        return rows;
+    },
+
     renderLineups() {
         const box = this.el && this.el.querySelector('.gs-cols');
         if (!box) return;
@@ -827,7 +887,25 @@ const GameStats = {
             const col = (t) => `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
                 ${t.starters.map((x, i) => (x.unit && x.unit !== (t.starters[i - 1] || {}).unit ? `<h5>${this.esc(x.unit)}</h5>` : '') + p(x, t.name)).join('')}
                 ${t.bench.length ? `<h5>${this.esc(t.benchLabel || 'Bench')}</h5>${t.bench.map((x) => p(x, t.name)).join('')}` : ''}</div>`;
-            box.innerHTML = teams.map(col).join('')
+            const pitchOk = data.sport === 'soccer' || teams.every((t) => t.formation);
+            const usePitch = this.pitchView && pitchOk && teams.some((t) => this.pitchRows(t));
+            const evs = (this.game && this.game.events) || [];
+            const pcol = (t) => {
+                const rows = this.pitchRows(t);
+                if (!rows) return col(t);
+                const badge = (x) => {
+                    if (hide) return '';
+                    const mine = evs.filter((e) => this.norm(e.player) === this.norm(x.name));
+                    const g = mine.filter((e) => e.kind === 'goal' || e.kind === 'pen').length;
+                    return (g ? `<u>\u26bd${g > 1 ? g : ''}</u>` : '') + (mine.some((e) => e.kind === 'red') ? '<u>\ud83d\udfe5</u>' : mine.some((e) => e.kind === 'yellow') ? '<u>\ud83d\udfe8</u>' : '') + (x.out ? '<u>\u2193</u>' : '');
+                };
+                const dot = (x) => `<div class="gs-pp${!hide && x.out ? ' out' : ''}" data-team="${this.esc(t.name)}" data-name="${this.esc(x.name)}" data-num="${this.esc(x.num)}" title="${this.esc(x.name)}${x.pos ? ' \u00b7 ' + this.esc(x.pos) : ''}"><b>${this.esc(x.num)}</b><span>${this.esc(String(x.name).split(' ').slice(-1)[0])}</span>${badge(x)}</div>`;
+                return `<div class="gs-col"><h4>${this.esc(t.name)}${t.formation ? ` <small>${this.esc(t.formation)}</small>` : ''}</h4>
+                    <div class="gs-pitch">${rows.slice().reverse().map((r) => `<div class="gs-pr">${r.map(dot).join('')}</div>`).join('')}</div>
+                    ${t.bench.length ? `<h5>${this.esc(t.benchLabel || 'Bench')}</h5>${t.bench.map((x) => p(x, t.name)).join('')}` : ''}</div>`;
+            };
+            box.innerHTML = (pitchOk ? `<div class="gs-viewbar"><button type="button" class="gs-pitch-toggle">${usePitch ? 'List view' : 'Pitch view'}</button></div>` : '')
+                + teams.map(usePitch ? pcol : col).join('')
                 + (data.note ? `<div class="gs-note">${this.esc(data.note)}</div>` : '')
                 + (hide ? '<div class="gs-note">Live stats hidden by the spoiler guard.</div>' : '')
                 + (!hide && this.settings.delay > 0 ? `<div class="gs-note">Shown ${this.settings.delay}s behind live.</div>` : '');
@@ -968,6 +1046,17 @@ const GameStats = {
         this.el.addEventListener('scroll', hide);
     },
 
+    // Home win probability over the game as a small line chart: above the dashed middle = home favoured.
+    sparkline(hist, game) {
+        if (!Array.isArray(hist) || hist.length < 4) return '';
+        const W = 100, H = 26, step = W / (hist.length - 1);
+        const pts = hist.map((v, i) => `${(i * step).toFixed(1)},${((1 - Math.min(1, Math.max(0, v))) * H).toFixed(1)}`).join(' ');
+        const home = this.esc(game.home.abbr || game.home.name), away = this.esc(game.away.abbr || game.away.name);
+        return `<div class="gs-spark" title="Win probability over the game: above the dashed line favours ${home}, below favours ${away}">
+            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}"/><polyline points="${pts}"/></svg>
+            <i class="t">${home}</i><i class="b">${away}</i></div>`;
+    },
+
     card(p) {
         const kv = (arr) => arr.map(([l, v, d]) => `<div class="gs-kv"><b>${this.esc(v)}</b><span${this.statTip(l, d)}>${this.esc(l)}</span></div>`).join('');
         const groups = (p.groups || []).filter((g) => g.stats.length);
@@ -1068,6 +1157,18 @@ const GameStats = {
 .gs-lineups[hidden]{display:none}
 .gamestats:has(.gs-lineups:not([hidden])){max-width:min(520px,92vw)}
 .gs-cols{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px}
+.gs-viewbar{flex:0 0 100%;display:flex;justify-content:flex-end;margin-bottom:-6px}.gs-pitch-toggle{padding:2px 8px;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:11px;cursor:pointer}.gs-pitch-toggle:hover{background:rgba(255,255,255,.16)}
+.gs-pitch{display:flex;flex-direction:column;justify-content:space-around;gap:6px;min-height:300px;padding:10px 4px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:linear-gradient(#1f6b3a,#2a8048 50%,#1f6b3a);background-size:100% 25%}
+.gs-pr{display:flex;justify-content:space-around;align-items:flex-start}
+.gs-pp{position:relative;display:flex;flex-direction:column;align-items:center;min-width:44px;max-width:64px;cursor:pointer}
+.gs-pp b{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:#fff;color:#111;font-size:12px}
+.gs-pp span{margin-top:2px;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;text-shadow:0 1px 2px #000}
+.gs-pp u{position:absolute;top:-4px;right:-2px;text-decoration:none;font-size:10px;line-height:1}.gs-pp u+u{top:8px}.gs-pp u+u+u{top:20px}
+.gs-pp.out b{opacity:.5}.gs-pp.out span{text-decoration:line-through;opacity:.7}
+.gs-pp:hover b{box-shadow:0 0 0 2px #ffd166}
+.gs-spark{position:relative;margin-top:4px;height:26px}.gs-spark svg{width:100%;height:26px;display:block;overflow:visible}
+.gs-spark line{stroke:rgba(255,255,255,.35);stroke-width:.6;stroke-dasharray:2 2;vector-effect:non-scaling-stroke}.gs-spark polyline{fill:none;stroke:#f0883e;stroke-width:1.6;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.gs-spark i{position:absolute;right:0;font-style:normal;font-size:9px;opacity:.55}.gs-spark i.t{top:-2px}.gs-spark i.b{bottom:-2px}
 .gs-q{width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid rgba(255,255,255,.2);border-radius:6px;background:rgba(255,255,255,.08);color:#fff;font:inherit;font-size:12px}
 .gs-hit{display:flex;align-items:baseline;gap:6px;width:100%;margin-top:3px;padding:3px 6px;border:0;border-radius:5px;background:rgba(255,255,255,.07);color:#fff;font:inherit;font-size:12px;text-align:left;cursor:pointer}
 .gs-hit:hover{background:rgba(255,255,255,.16)}
@@ -1098,6 +1199,7 @@ const GameStats = {
 .gs-empty{opacity:.7;font-size:12px}
 .gs-toast{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:30;padding:5px 12px;border-radius:8px;background:rgba(12,14,20,.85);color:#fff;font:12px Inter,system-ui,sans-serif;opacity:0;pointer-events:none;transition:opacity .25s}
 .gs-toast.show{opacity:1}
+.gs-toast.score{top:44px;padding:8px 16px;border-radius:10px;font-size:15px;font-weight:700;background:rgba(18,92,48,.94);border:1px solid rgba(255,255,255,.3);max-width:86%;text-align:center}
 @media (max-width:640px){.gamestats{bottom:110px;left:8px;min-width:170px}.gs-lineups{min-width:0}.gs-cols{flex-direction:column}}
 `;
         document.head.appendChild(s);
