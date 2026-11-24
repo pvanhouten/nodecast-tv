@@ -238,6 +238,20 @@ const GameStats = {
         return [name, prog && prog.title, prog && String(prog.desc || '').slice(0, 200)].filter(Boolean).join(' | ');
     },
 
+    // Tell the server which channel and programme this viewer is on (every ~20 s while a channel is tuned), so the gamewatch
+    // second-screen server can show them the right game. Fire and forget; the overlay works without it.
+    reportWatching() {
+        const ch = this.channel;
+        if (!ch) return;
+        const now = Date.now();
+        if (now - (this._reportAt || 0) < 20000) return;
+        this._reportAt = now;
+        const name = ch.name || ch.tvgName || '';
+        const title = this.currentText().split(' | ').slice(1).join(' | ');
+        fetch('/api/gamewatch/report', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: name, title }) }).catch(() => { /* optional */ });
+    },
+
     setChannel(channel) {
         clearTimeout(this.timer);
         clearTimeout(this.extraTimer);
@@ -260,6 +274,7 @@ const GameStats = {
         clearTimeout(this.timer);
         const channel = this.channel;
         if (!channel) return;
+        this.reportWatching();
         const text = this.currentText();
         this.title = text;
         let game = null;
