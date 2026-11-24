@@ -758,6 +758,15 @@ function buildVar(summary, sport) {
     return { checking: since !== null && state === 'in', since: since !== null ? since : '', decisions };
 }
 
+// Home win probability over the game, thinned to at most `max` points (keeps the first and last) for a sparkline.
+function winHistory(wp, max = 48) {
+    const vals = wp.map((x) => x.homeWinPercentage).filter((v) => typeof v === 'number').map((v) => Math.round(v * 1000) / 1000);
+    if (vals.length <= max) return vals;
+    const out = [];
+    for (let i = 0; i < max; i++) out.push(vals[Math.round((i * (vals.length - 1)) / (max - 1))]);
+    return out;
+}
+
 // Pure: { winProb, spread, teamStats, varCheck } from an ESPN summary. Anything missing is null.
 function buildExtra(summary, sport) {
     let winProb = null;
@@ -767,6 +776,7 @@ function buildExtra(summary, sport) {
         if (typeof last.homeWinPercentage === 'number') {
             const home = last.homeWinPercentage, tie = last.tiePercentage || 0;
             winProb = { home, away: Math.max(0, 1 - home - tie) };
+            winProb.history = winHistory(wp);
         }
     }
     const pc = summary.pickcenter?.[0];
@@ -859,4 +869,4 @@ async function playerSeason(leagueKey, athleteId) {
     return entry.promise;
 }
 
-module.exports = { headshotUrl, buildVar, singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };
+module.exports = { winHistory, headshotUrl, buildVar, singleTeamLeagues, pickTeamGame, lookupSingle, startTeamIndex, buildIndexEntry, candidateLeagues, searchCandidates, teamIndex, extra, buildExtra, buildSituation, soccerEvents, search, gameById, parseQuery, filterEvents, players, playerSeason, boxPlayers, lineups, buildLineups, nflTeamStarters, collegeTeamLineup, lookup, findGame, normalize, looksLikeMatchup, sportHint, LEAGUES };

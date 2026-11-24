@@ -238,7 +238,7 @@ test('extra: win probability, line and team stats from a summary', () => {
             { homeAway: 'home', team: { abbreviation: 'PHX' }, statistics: [stat('fieldGoalPct', '53'), stat('totalRebounds', '41'), stat('assists', '26')] }] }
     };
     const x = gs.buildExtra(summary, 'basketball');
-    assert.deepEqual(x.winProb, { home: 0.75, away: 0.25 });
+    assert.deepEqual(x.winProb, { home: 0.75, away: 0.25, history: [0.4, 0.75] });
     assert.deepEqual(x.spread, { text: 'PHX -3.5', overUnder: 224.5 });
     assert.equal(x.teamStats.away, 'LAC');
     assert.deepEqual(x.teamStats.rows[0], { label: 'FG%', away: '40%', home: '53%' });
@@ -405,4 +405,51 @@ test('headshots: ESPN box-score URL is kept, otherwise built from the league fol
     const [t] = gs.boxPlayers(summary, 'basketball');
     assert.equal(t.players[0].photo, 'https://a.espncdn.com/i/headshots/nba/players/full/99.png');
     assert.equal(t.players[1].photo, '');
+});
+
+test('win probability history is thinned to a bounded sparkline that keeps the first and last point', () => {
+    assert.deepEqual(gs.winHistory([{ homeWinPercentage: 0.5 }, { homeWinPercentage: 0.61234 }, {}]), [0.5, 0.612]);
+    const many = Array.from({ length: 500 }, (_, i) => ({ homeWinPercentage: i / 499 }));
+    const out = gs.winHistory(many);
+    assert.equal(out.length, 48);
+    assert.equal(out[0], 0);
+    assert.equal(out[47], 1);
+});
+
+test('pitch view: soccer starters are cut into formation rows and ordered left to right', () => {
+    const GS = require('../public/js/components/GameStats.js');
+    const st = (pos, i) => ({ pos, num: String(i + 1), name: 'P' + i });
+    const city = { formation: '4-2-3-1', starters: ['G', 'AM', 'AM-L', 'RB', 'LB', 'LM', 'CD-R', 'CD-L', 'AM-R', 'RM', 'F'].map(st) };
+    assert.deepEqual(GS.pitchRows(city).map((r) => r.map((x) => x.pos)),
+        [['G'], ['LB', 'CD-L', 'CD-R', 'RB'], ['LM', 'RM'], ['AM-L', 'AM', 'AM-R'], ['F']]);
+    const bvb = { formation: '3-4-2-1', starters: ['G', 'CF-R', 'CF-L', 'RM', 'LM', 'CD-L', 'CD', 'CD-R', 'CM-R', 'CM-L', 'F'].map(st) };
+    assert.deepEqual(GS.pitchRows(bvb).map((r) => r.length), [1, 3, 4, 2, 1]);
+    assert.deepEqual(GS.pitchRows(bvb)[4].map((x) => x.pos), ['F']);
+    assert.equal(GS.pitchRows({ formation: '', starters: city.starters }), null);
+    assert.equal(GS.pitchRows({ formation: '4-4-3', starters: city.starters }), null);
+    assert.equal(GS.pitchRows({ formation: '4-2-3-1', starters: city.starters.slice(1) }), null);
+});
+
+test('score toast: soccer goal names the scorer; skipped for basketball, hidden scores, score decreases and first paint', () => {
+    const GS = Object.create(require('../public/js/components/GameStats.js'));
+    const shown = [];
+    GS.toast = (msg, ms, cls) => shown.push([msg, ms, cls]);
+    GS.settings = { goalToast: true, hideScores: false };
+    GS.off = false;
+    const g = (a, h, extra = {}) => ({ id: '1', sport: 'soccer', state: 'in', away: { abbr: 'NAP', score: String(a) }, home: { abbr: 'MCI', score: String(h) }, events: [], lastPlay: '', ...extra });
+    GS.scoreToast(null, g(0, 0));
+    GS.scoreToast(g(0, 0), g(0, 0));
+    assert.equal(shown.length, 0);
+    GS.scoreToast(g(0, 0), g(0, 1, { events: [{ kind: 'goal', player: 'Erling Haaland', min: "34'", team: 'MCI' }] }));
+    assert.equal(shown.length, 1);
+    assert.match(shown[0][0], /^GOAL! \u00b7 NAP 0\u20131 MCI/);
+    assert.match(shown[0][0], /Erling Haaland 34'/);
+    assert.equal(shown[0][2], 'score');
+    GS.scoreToast(g(0, 1), g(0, 0)); // VAR takes it away: no banner
+    GS.scoreToast(g(0, 0), g(0, 1, { sport: 'basketball' }));
+    GS.scoreToast(g(0, 0), g(0, 1, { id: '2' }));
+    GS.scoreToast(g(0, 0, { state: 'pre' }), g(0, 1));
+    GS.settings.hideScores = true;
+    GS.scoreToast(g(0, 0), g(0, 1));
+    assert.equal(shown.length, 1);
 });
