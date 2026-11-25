@@ -453,3 +453,23 @@ test('score toast: soccer goal names the scorer; skipped for basketball, hidden 
     GS.scoreToast(g(0, 0), g(0, 1));
     assert.equal(shown.length, 1);
 });
+
+test('volleyball: the sport is recognised and both NCAA feeds exist', () => {
+    assert.equal(gs.sportHint("NCAA Women's Volleyball: Purdue at Nebraska"), 'volleyball');
+    assert.equal(gs.sportHint('Volleyball | Stanford vs Pittsburgh'), 'volleyball');
+    const w = gs.LEAGUES.find((l) => l.key === 'ncaavb-w');
+    const m = gs.LEAGUES.find((l) => l.key === 'ncaavb-m');
+    assert.equal(w.path, 'volleyball/womens-college-volleyball');
+    assert.equal(m.path, 'volleyball/mens-college-volleyball');
+    assert.equal(w.sport, 'volleyball');
+});
+
+test('volleyball situation lists the set scores, away first', () => {
+    const comp = { competitors: [
+        { homeAway: 'home', team: { abbreviation: 'NEB' }, linescores: [{ value: 21 }, { value: 27 }, { value: 8 }] },
+        { homeAway: 'away', team: { abbreviation: 'PUR' }, linescores: [{ value: 25 }, { value: 25 }, { value: 10 }] }
+    ] };
+    assert.equal(gs.buildSituation(comp, 'volleyball', () => ''), 'PUR-NEB sets: 25-21, 25-27, 10-8');
+    assert.equal(gs.buildSituation({ competitors: [] }, 'volleyball', () => ''), '');
+    assert.equal(gs.buildSituation({ competitors: [{ homeAway: 'home', team: {} }, { homeAway: 'away', team: {} }] }, 'volleyball', () => ''), '');
+});

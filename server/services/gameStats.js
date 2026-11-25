@@ -14,6 +14,8 @@ const LEAGUES = [
     { key: 'nfl', sport: 'football', label: 'NFL', path: 'football/nfl', query: '', words: 'nfl football' },
     { key: 'nhl', sport: 'hockey', label: 'NHL', path: 'hockey/nhl', query: '', words: 'nhl hockey' },
     { key: 'mlb', sport: 'baseball', label: 'MLB', path: 'baseball/mlb', query: '', words: 'mlb baseball' },
+    { key: 'ncaavb-w', sport: 'volleyball', label: 'NCAA Volleyball', path: 'volleyball/womens-college-volleyball', query: 'limit=400', words: 'ncaa college womens women volleyball wvb' },
+    { key: 'ncaavb-m', sport: 'volleyball', label: 'NCAA Men\'s Volleyball', path: 'volleyball/mens-college-volleyball', query: 'limit=400', words: 'ncaa college mens men volleyball mvb' },
     // One feed per competition so games carry a real label. Order matters: on a tie the earlier feed wins.
     ...[
         ['eng.1', 'Premier League', 'premier league epl english england'],
@@ -49,6 +51,7 @@ const SPORT_HINTS = [
     ['basketball', /\b(ncaab|ncaaw|basketball|nba|wnba)\b/i],
     ['football', /\b(ncaaf|nfl|college football)\b/i],
     ['hockey', /\b(nhl|hockey)\b/i],
+    ['volleyball', /\b(volleyball|ncaavb|wvb|mvb)\b/i],
     ['baseball', /\b(mlb|baseball)\b/i],
     // soccer last: "Basketball Champions League" must resolve to basketball first
     ['soccer', /\b(soccer|epl|premier league|la ?liga|bundesliga|serie a|ligue 1|champions league|europa|uefa|mls|liga mx)\b/i]
@@ -99,6 +102,15 @@ function teamScore(title, team) {
 // Short "what is happening right now" line (NFL down & distance, MLB count/runners). Best effort: absent fields
 // just shorten the line, and ESPN only sends it while a game is live.
 function buildSituation(comp, sport, teamAbbr) {
+    if (sport === 'volleyball') {
+        // ESPN's score is sets won; the points in each set are the competitors' linescores.
+        const away = (comp.competitors || []).find((c) => c.homeAway === 'away');
+        const home = (comp.competitors || []).find((c) => c.homeAway === 'home');
+        const a = (away && away.linescores) || [], h = (home && home.linescores) || [];
+        if (!a.length || a.length !== h.length) return '';
+        const sets = a.map((x, i) => `${x.value}-${h[i].value}`).join(', ');
+        return `${away.team?.abbreviation || 'A'}-${home.team?.abbreviation || 'H'} sets: ${sets}`;
+    }
     const s = comp.situation;
     if (!s) return '';
     if (sport === 'football') {
