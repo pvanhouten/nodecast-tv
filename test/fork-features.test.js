@@ -323,6 +323,27 @@ test('guide search also finds channels airing a matching show in the guide windo
     assert.match(guide, /name\.includes\(searchTerm\) \|\| \(ch\.epgChannel && airing\.has\(ch\.epgChannel\.id\)\)/);
 });
 
+test('guide search stays inside the selected group (and Favorites)', () => {
+    const guide = fs.readFileSync(path.join(root, 'public/js/components/EpgGuide.js'), 'utf8');
+    const body = guide.match(/updateFilteredChannels\(\) \{([\s\S]*?)\n    \}\n/)[1];
+    const updateFilteredChannels = new Function(body);
+    const ch = (id, name, groupTitle) => ({ sourceChannel: { id, sourceId: 's', name, groupTitle }, epgChannel: null });
+    const ctx = {
+        searchInput: { value: 'espn' },
+        favorites: new Set(['s:2']),
+        channelIdsAiring: () => new Set(),
+        allMatchedChannels: [ch('1', 'ESPN One', 'Sports'), ch('2', 'ESPN Two', 'News'), ch('3', 'CNN', 'News'), ch('4', 'ESPN Three')],
+    };
+    const run = group => { ctx.selectedGroup = group; updateFilteredChannels.call(ctx); return ctx.filteredChannels.map(m => m.sourceChannel.id); };
+    assert.deepEqual(run('News'), ['2'], 'search must not leak channels from other groups');
+    assert.deepEqual(run('Sports'), ['1']);
+    assert.deepEqual(run('Uncategorized'), ['4']);
+    assert.deepEqual(run('Favorites'), ['2']);
+    assert.deepEqual(run(''), ['1', '2', '4'], 'All Groups searches everything');
+    ctx.searchInput.value = '';
+    assert.deepEqual(run('News'), ['2', '3'], 'no search text: plain group filter');
+});
+
 // ---------------------------------------------------------------------------------------------
 // Security: login throttle, Active Streams "Stop", and the VPN-proxy / privacy paths
 // ---------------------------------------------------------------------------------------------

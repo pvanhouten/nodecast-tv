@@ -329,32 +329,30 @@ class EpgGuide {
     updateFilteredChannels() {
         const searchTerm = this.searchInput ? this.searchInput.value.toLowerCase().trim() : '';
 
-        // SEARCH MODE: Filter all channels by name, or by what they are airing in the guide window
-        // (title/description), so a team name finds the channel carrying that game.
-        if (searchTerm) {
-            const airing = this.channelIdsAiring(searchTerm);
-            this.filteredChannels = this.allMatchedChannels.filter(ch => {
-                const name = (ch.sourceChannel?.name || '').toLowerCase();
-                return name.includes(searchTerm) || (ch.epgChannel && airing.has(ch.epgChannel.id));
-            });
-            return;
-        }
-
-        // GROUP MODE (Default)
+        // Group first: the dropdown always narrows the pool, whether or not there is search text.
+        let pool;
         if (this.selectedGroup === 'Favorites') {
-            this.filteredChannels = this.allMatchedChannels.filter(m =>
+            pool = this.allMatchedChannels.filter(m =>
                 this.favorites.has(`${m.sourceChannel.sourceId}:${m.sourceChannel.id}`)
             );
-            return;
-        }
-
-        if (!this.selectedGroup || this.selectedGroup === 'All') {
-            this.filteredChannels = [...this.allMatchedChannels];
+        } else if (!this.selectedGroup || this.selectedGroup === 'All') {
+            pool = [...this.allMatchedChannels];
         } else {
-            this.filteredChannels = this.allMatchedChannels.filter(m =>
+            pool = this.allMatchedChannels.filter(m =>
                 (m.sourceChannel.groupTitle || 'Uncategorized') === this.selectedGroup
             );
         }
+
+        // Then search within that pool, by channel name or by what the channel is airing in the guide
+        // window (title/description), so a team name finds the channel carrying that game.
+        if (searchTerm) {
+            const airing = this.channelIdsAiring(searchTerm);
+            pool = pool.filter(ch => {
+                const name = (ch.sourceChannel?.name || '').toLowerCase();
+                return name.includes(searchTerm) || (ch.epgChannel && airing.has(ch.epgChannel.id));
+            });
+        }
+        this.filteredChannels = pool;
     }
 
     /**
