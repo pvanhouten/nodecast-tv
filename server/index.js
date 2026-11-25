@@ -184,6 +184,7 @@ app.get('/api/version', (req, res) => res.json({ version: require('../package.js
 app.use('/api', auth.requireSameOrigin);
 const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
+app.use('/api/gamewatch', require('./routes/gamewatch').publicRouter); // secret-guarded, read by the gamewatch server
 app.use('/api', auth.requireAuth);
 app.use('/api', (req, res, next) => {
     try {
@@ -216,6 +217,7 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/history', require('./routes/history'));
 app.use('/api/openwebif', require('./routes/openwebif'));
 app.use('/api/gamestats', require('./routes/gamestats'));
+app.use('/api/gamewatch', require('./routes/gamewatch').authRouter);
 
 // SPA fallback - serve index.html for all non-API routes
 app.get('*', (req, res) => {
